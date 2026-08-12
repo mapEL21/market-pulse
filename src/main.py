@@ -44,7 +44,7 @@ def main() -> None:
     print()
     print(
         render_funnel(
-            exchange="BINANCE",
+            exchange="BINANCE USDT-M perp",
             total=filter_stats.total,
             passed=filter_stats.passed,
             analysed=len(metrics_by_symbol),

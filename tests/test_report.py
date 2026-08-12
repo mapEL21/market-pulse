@@ -9,7 +9,7 @@ import pytest
 
 from src.config import DEFAULT
 from src.metrics import Metrics
-from src.report import ats, build_reasons, compact, summary
+from src.report import ats, build_reasons, compact, format_symbol, summary
 
 
 def make_metrics(
@@ -46,6 +46,13 @@ def test_compact_switches_units_by_magnitude():
     assert compact(30_622) == "30.6K"
     assert compact(862) == "862"
     assert compact(2_400_000_000) == "2.4B"
+
+
+def test_symbol_is_printed_as_a_futures_ticker():
+    """Слэш означал бы спотовую пару, а анализируются только перпетуалы.
+    Тикер пишется как на бирже, метка снимает двусмысленность."""
+    assert format_symbol("COTIUSDT") == "COTIUSDT · PERP"
+    assert "/" not in format_symbol("COTIUSDT")
 
 
 def test_there_is_one_reason_per_metric():

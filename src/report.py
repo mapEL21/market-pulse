@@ -62,10 +62,15 @@ def format_amount(value: float) -> str:
 
 
 def format_symbol(symbol: str) -> str:
-    """BTCUSDT -> 'BTC/USDT'. Так пара читается быстрее, чем сплошной строкой."""
-    if symbol.endswith("USDT"):
-        return f"{symbol[: -len('USDT')]}/USDT"
-    return symbol
+    """COTIUSDT -> 'COTIUSDT · PERP'.
+
+    Тикер печатается ровно так, как он называется на бирже, без слэша:
+    запись вида COTI/USDT привычно означает спотовую пару, а анализируются
+    только бессрочные фьючерсы. Метка PERP убирает эту двусмысленность —
+    у одного и того же актива спот и перпетуал живут своей жизнью, и путать
+    их при переходе к графику нельзя.
+    """
+    return f"{symbol} · PERP"
 
 
 def format_candle_close(open_time_ms: int) -> str:
