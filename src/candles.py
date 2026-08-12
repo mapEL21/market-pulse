@@ -15,8 +15,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.exchanges import binance
-from src.exchanges.binance import Candle, Instrument
+from src.exchanges.base import Candle, Instrument
 
 INTERVAL = "15m"
 INTERVAL_MS = 15 * 60 * 1000
@@ -38,7 +37,7 @@ FETCH_LIMIT = WINDOW_CANDLES + 1
 CACHE_DIR = Path("data") / "cache"
 
 # Пауза между запросами к бирже. Маленькая осознанно: вес запроса невелик,
-# а фактический расход проверяется по заголовку ответа (binance.used_weight).
+# а фактический расход проверяется через client.used_weight().
 PAUSE_SEC = 0.05
 
 
@@ -82,42 +81,48 @@ class LoadStats:
     used_weight: int    # израсходованный вес за минуту, по данным биржи
 
 
-def cache_path(symbol: str, last_closed_open: int) -> Path:
+def cache_path(exchange: str, symbol: str, last_closed_open: int) -> Path:
     """Путь к кэшу ответа для инструмента и конкретной свечи.
 
     Граница входит в имя файла, поэтому кэш протухает сам: наступила новая
     свеча — имя другое, файла нет, идём в сеть. Ни времени жизни, ни очистки.
+
+    Имя биржи в ключе обязательно: один и тот же тикер торгуется на обеих,
+    а ответы у них разного формата.
     """
-    return CACHE_DIR / f"BINANCE_{symbol}_{INTERVAL}_{last_closed_open}.json"
+    return CACHE_DIR / f"{exchange}_{symbol}_{INTERVAL}_{last_closed_open}.json"
 
 
 def load_symbol_candles(
-    symbol: str, last_closed_open: int
+    client, symbol: str, last_closed_open: int
 ) -> tuple[list[Candle], bool]:
     """Закрытые свечи одного инструмента.
+
+    client — модуль биржи, контракт описан в exchanges/base.py.
 
     Второй элемент пары — был ли запрос к бирже. Нужен, чтобы не делать паузу
     после попадания в кэш и чтобы посчитать статистику прогона.
     """
-    path = cache_path(symbol, last_closed_open)
+    path = cache_path(client.NAME, symbol, last_closed_open)
 
     if path.exists():
         raw = json.loads(path.read_text(encoding="utf-8"))
         went_to_api = False
     else:
-        raw = binance.fetch_raw_klines(
+        raw = client.fetch_raw_candles(
             symbol, INTERVAL, FETCH_LIMIT, end_time=last_closed_open
         )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(raw), encoding="utf-8")
         went_to_api = True
 
-    candles = [binance.parse_candle(item) for item in raw]
+    ordered = client.raw_candles_oldest_first(raw)
+    candles = [client.parse_candle(item) for item in ordered]
     return analysis_window(candles, last_closed_open), went_to_api
 
 
 def load_candles(
-    instruments: list[Instrument], last_closed_open: int
+    client, instruments: list[Instrument], last_closed_open: int
 ) -> tuple[dict[str, list[Candle]], LoadStats]:
     """Загрузить свечи для всех инструментов и отсеять тех, у кого мало истории.
 
@@ -132,7 +137,9 @@ def load_candles(
     too_short = 0
 
     for instrument in instruments:
-        candles, went_to_api = load_symbol_candles(instrument.symbol, last_closed_open)
+        candles, went_to_api = load_symbol_candles(
+            client, instrument.symbol, last_closed_open
+        )
 
         if went_to_api:
             from_api += 1
@@ -153,6 +160,6 @@ def load_candles(
         too_short=too_short,
         loaded=len(by_symbol),
         elapsed_sec=time.monotonic() - started,
-        used_weight=binance.used_weight(),
+        used_weight=client.used_weight(),
     )
     return by_symbol, stats

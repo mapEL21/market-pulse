@@ -10,7 +10,32 @@
 другая природа: это не подбираемые параметры, а зафиксированные решения.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class ExchangeFilters:
+    """Пороги отсева одной биржи, раздел 5 spec.md.
+
+    Неравенства строгие: значение ровно на пороге проходит фильтр.
+
+    Пороги вынесены по биржам, потому что различия между ними реальны:
+    статус активных торгов у Binance называется TRADING, у OKX — live,
+    а числа сделок за 24 часа OKX в публичном API не отдаёт вовсе,
+    поэтому у него этот фильтр отключён (None).
+    """
+
+    active_status: str = "TRADING"
+    min_quote_volume_24h: float = 50_000_000  # USDT за 24 часа
+    min_trades_24h: int | None = 10_000
+
+
+BINANCE_FILTERS = ExchangeFilters()
+
+# Порог оборота тот же, что у Binance: проскальзывание зависит от абсолютной
+# глубины рынка, а не от места биржи в рейтинге. Измерено — при 50 млн на OKX
+# остаётся 29 инструментов, отбирать есть из чего.
+OKX_FILTERS = ExchangeFilters(active_status="live", min_trades_24h=None)
 
 
 @dataclass(frozen=True)
@@ -22,11 +47,9 @@ class Config:
     результат на самом деле получен.
     """
 
-    # --- Фильтры, раздел 5 spec.md ---
-    # Неравенства строгие: значение ровно на пороге проходит фильтр.
-    active_status: str = "TRADING"
-    min_quote_volume_24h: float = 50_000_000  # USDT за 24 часа
-    min_trades_24h: int = 10_000
+    filters: dict[str, ExchangeFilters] = field(
+        default_factory=lambda: {"BINANCE": BINANCE_FILTERS, "OKX": OKX_FILTERS}
+    )
 
     # --- Пороги интереса, раздел 6 spec.md ---
     # Неравенства нестрогие: значение ровно на пороге считается сработавшим.

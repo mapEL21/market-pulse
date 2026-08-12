@@ -7,6 +7,7 @@ import pytest
 from src.config import DEFAULT
 from src.metrics import Metrics
 from src.scoring import (
+    available_metrics,
     is_candidate,
     normalized,
     score,
@@ -143,6 +144,35 @@ def test_capped_instruments_are_ordered_by_raw_rvol():
 
     assert score(weaker) == pytest.approx(score(stronger))
     assert [candidate.symbol for candidate in result] == ["ZZZ", "AAA"]
+
+
+def without_trade_counts(rvol: float, ve: float) -> Metrics:
+    """Метрики биржи, которая не публикует число сделок (OKX)."""
+    metrics = make_metrics(rvol=rvol, ve=ve)
+    return replace(metrics, rtc=None, trades=None, trades_median=None)
+
+
+def test_two_metrics_are_reported_as_two():
+    assert available_metrics(at_thresholds()) == 3
+    assert available_metrics(without_trade_counts(3.0, 2.0)) == 2
+
+
+def test_score_is_still_one_at_thresholds_with_only_two_metrics():
+    """Главное свойство перенормировки весов: шкала score значит одно и то же
+    на бирже с тремя метриками и на бирже с двумя. Без деления на сумму весов
+    здесь получилось бы 0.7."""
+    assert score(without_trade_counts(3.0, 2.0)) == pytest.approx(1.0)
+
+
+def test_with_two_metrics_both_must_trigger():
+    """Правило «не меньше двух» при двух доступных метриках само
+    превращается в «обе», отдельного случая в коде не нужно."""
+    only_volume = without_trade_counts(rvol=50.0, ve=1.0)
+    both = without_trade_counts(rvol=50.0, ve=2.0)
+
+    assert triggered_metrics(only_volume) == 1
+    assert not is_candidate(only_volume)
+    assert is_candidate(both)
 
 
 def test_top_n_comes_from_the_config():

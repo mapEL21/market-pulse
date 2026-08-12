@@ -1,28 +1,19 @@
 """Клиент публичного API Binance USDⓈ-M Futures.
 
 Используются только публичные эндпоинты, ключи API не нужны.
-Модуль ничего не печатает: он возвращает данные, вывод — задача main.py.
-"""
+Модуль ничего не печатает: он возвращает данные, вывод — задача report.py.
 
-from dataclasses import dataclass
+Контракт, которому следует модуль, описан в base.py.
+"""
 
 import requests
 
+from src.exchanges.base import Candle, Instrument
+
+NAME = "BINANCE"
+MARKET = "USDT-M perpetual"
 BASE_URL = "https://fapi.binance.com"
 TIMEOUT_SEC = 10
-
-
-@dataclass
-class Instrument:
-    """Инструмент биржи вместе с его 24-часовой статистикой."""
-
-    symbol: str
-    status: str               # статус торгов, например TRADING
-    quote_volume_24h: float   # оборот за 24 ч в USDT
-    trades_24h: int           # число сделок за 24 ч
-    last_price: float
-    change_pct_24h: float
-
 
 _used_weight_1m = 0
 
@@ -109,16 +100,13 @@ def get_instruments() -> list[Instrument]:
     return build_instruments(fetch_symbols(), fetch_tickers())
 
 
-@dataclass
-class Candle:
-    """Одна свеча. Поля — только те, что используются формулами раздела 6 spec.md."""
+def raw_candles_oldest_first(raw: list) -> list:
+    """Binance отдаёт свечи от старых к новым — переворачивать нечего.
 
-    open_time: int        # начало свечи, миллисекунды UTC
-    high: float
-    low: float
-    close: float
-    quote_volume: float   # оборот за свечу в USDT
-    trades: int           # число сделок за свечу
+    Функция существует ради общего контракта из base.py: у OKX порядок
+    обратный, и приводить его должен клиент, а не общий код.
+    """
+    return raw
 
 
 def parse_candle(raw: list) -> Candle:
@@ -149,13 +137,13 @@ def fetch_server_time() -> int:
     return int(_get("/fapi/v1/time")["serverTime"])
 
 
-def fetch_raw_klines(
+def fetch_raw_candles(
     symbol: str, interval: str, limit: int, end_time: int | None = None
 ) -> list:
     """Сырой ответ /fapi/v1/klines — массивы без имён, как их отдаёт биржа.
 
-    Отдельно от fetch_klines, потому что в кэш кладётся именно сырой ответ:
-    тогда формат кэша не зависит от того, какие поля мы решим разбирать.
+    В кэш кладётся именно сырой ответ: тогда формат кэша не зависит от того,
+    какие поля мы решим разбирать.
 
     end_time — время открытия последней нужной свечи. Без него биржа отдаёт
     последние limit свечей «на момент запроса», и результат зависит от того,
@@ -167,13 +155,3 @@ def fetch_raw_klines(
     if end_time is not None:
         params["endTime"] = end_time
     return _get("/fapi/v1/klines", params)
-
-
-def fetch_klines(
-    symbol: str, interval: str, limit: int, end_time: int | None = None
-) -> list[Candle]:
-    """Свечи одного инструмента, от старых к новым."""
-    return [
-        parse_candle(item)
-        for item in fetch_raw_klines(symbol, interval, limit, end_time)
-    ]

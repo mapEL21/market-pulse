@@ -56,9 +56,10 @@ def make_candidate(symbol: str = "APRUSDT", rank: int = 1) -> Candidate:
     return Candidate(symbol=symbol, rank=rank, score=3.0, metrics=metrics)
 
 
-def store_run(conn, candidates_count: int = 5) -> int:
+def store_run(conn, candidates_count: int = 5, exchange: str = "BINANCE") -> int:
     return save_run(
         conn,
+        exchange=exchange,
         candle_open_ms=CANDLE_MS,
         total_symbols=527,
         passed_filters=39,
@@ -117,10 +118,17 @@ def test_config_json_round_trips(connection):
     ).fetchone()[0]
     restored = json.loads(stored)
 
-    assert restored["min_quote_volume_24h"] == DEFAULT.min_quote_volume_24h
     assert restored["rvol_threshold"] == DEFAULT.rvol_threshold
     assert restored["rvol_weight"] == DEFAULT.rvol_weight
     assert restored["top_n"] == DEFAULT.top_n
+
+    # Пороги фильтров вложены по биржам, и в JSON должны попасть обе:
+    # прогоны разных бирж отличаются именно ими.
+    assert (
+        restored["filters"]["BINANCE"]["min_quote_volume_24h"]
+        == DEFAULT.filters["BINANCE"].min_quote_volume_24h
+    )
+    assert restored["filters"]["OKX"]["min_trades_24h"] is None
 
 
 def test_candidates_are_linked_to_their_run(connection):
@@ -167,9 +175,29 @@ def test_foreign_key_is_enforced(connection):
 
 
 def test_repeated_run_for_the_same_candle_is_detectable(connection):
-    assert not run_exists(connection, to_iso(CANDLE_MS))
+    assert not run_exists(connection, "BINANCE", to_iso(CANDLE_MS))
 
     store_run(connection)
 
-    assert run_exists(connection, to_iso(CANDLE_MS))
-    assert not run_exists(connection, to_iso(CANDLE_MS + 15 * 60 * 1000))
+    assert run_exists(connection, "BINANCE", to_iso(CANDLE_MS))
+    assert not run_exists(connection, "BINANCE", to_iso(CANDLE_MS + 15 * 60 * 1000))
+
+
+def test_second_exchange_on_the_same_candle_is_not_a_duplicate():
+    """Один запуск программы пишет по строке на биржу. Это не дубли:
+    воронка у каждой биржи своя, и различать их надо по exchange."""
+    conn = connect(":memory:")
+    try:
+        store_run(conn, exchange="BINANCE")
+
+        assert run_exists(conn, "BINANCE", to_iso(CANDLE_MS))
+        assert not run_exists(conn, "OKX", to_iso(CANDLE_MS))
+
+        store_run(conn, exchange="OKX")
+        rows = conn.execute(
+            "SELECT exchange FROM runs ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert rows == [("BINANCE",), ("OKX",)]

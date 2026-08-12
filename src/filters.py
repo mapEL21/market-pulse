@@ -14,8 +14,8 @@
 
 from dataclasses import dataclass
 
-from src.config import DEFAULT, Config
-from src.exchanges.binance import Instrument
+from src.config import BINANCE_FILTERS, ExchangeFilters
+from src.exchanges.base import Instrument
 
 # Порядок проверок и порядок строк в отчёте об отсеве.
 REASONS = ("status", "volume", "trades")
@@ -31,25 +31,29 @@ class FilterStats:
 
 
 def rejection_reason(
-    instrument: Instrument, config: Config = DEFAULT
+    instrument: Instrument, filters: ExchangeFilters = BINANCE_FILTERS
 ) -> str | None:
     """Код первой сработавшей причины отсева или None, если инструмент прошёл.
 
     Порядок проверок идёт от общего к частному: инструмент, снятый с торгов,
     учитывается как снятый с торгов, а не как неликвидный — иначе статистика
     отсева отвечала бы не на тот вопрос, который задан.
+
+    Фильтр по числу сделок пропускается, если биржа этих данных не отдаёт:
+    у OKX их нет ни в свечах, ни в тикере.
     """
-    if instrument.status != config.active_status:
+    if instrument.status != filters.active_status:
         return "status"
-    if instrument.quote_volume_24h < config.min_quote_volume_24h:
+    if instrument.quote_volume_24h < filters.min_quote_volume_24h:
         return "volume"
-    if instrument.trades_24h < config.min_trades_24h:
-        return "trades"
+    if filters.min_trades_24h is not None and instrument.trades_24h is not None:
+        if instrument.trades_24h < filters.min_trades_24h:
+            return "trades"
     return None
 
 
 def apply_filters(
-    instruments: list[Instrument], config: Config = DEFAULT
+    instruments: list[Instrument], filters: ExchangeFilters = BINANCE_FILTERS
 ) -> tuple[list[Instrument], FilterStats]:
     """Разделить список на прошедших фильтры и статистику отсева.
 
@@ -60,7 +64,7 @@ def apply_filters(
     rejected = {reason: 0 for reason in REASONS}
 
     for instrument in instruments:
-        reason = rejection_reason(instrument, config)
+        reason = rejection_reason(instrument, filters)
         if reason is None:
             passed.append(instrument)
         else:

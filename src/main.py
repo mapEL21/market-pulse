@@ -2,17 +2,18 @@
 
 Запуск: python -m src.main
 
-Реализованы этапы 1-7: список бессрочных USDT-контрактов Binance,
-отсев неликвида, загрузка свечей, расчёт метрик RVOL / RTC / VE,
-скоринг, отчёт с объяснениями и сохранение прогона в SQLite.
+Реализованы этапы 1-8: Binance и OKX, отсев неликвида, загрузка свечей,
+расчёт метрик, скоринг, отчёт с объяснениями и сохранение прогонов в SQLite.
 
 Модуль только связывает шаги и печатает готовые строки. Всё форматирование
 живёт в report.py, все вычисления — в остальных модулях.
 """
 
+import sqlite3
+
 from src.candles import last_closed_open_time, load_candles
 from src.config import DEFAULT
-from src.exchanges import binance
+from src.exchanges import binance, okx
 from src.filters import apply_filters
 from src.metrics import compute_all
 from src.report import (
@@ -25,19 +26,18 @@ from src.report import (
 from src.scoring import is_candidate, select_candidates
 from src.storage import connect, run_exists, save_candidates, save_run, to_iso
 
-EXCHANGE = "BINANCE"
+EXCHANGES = (binance, okx)
 
 
-def main() -> None:
-    last_closed_open = last_closed_open_time(binance.fetch_server_time())
-    print(render_header(last_closed_open))
-    print()
+def analyse(client, last_closed_open: int, connection: sqlite3.Connection) -> None:
+    """Полный проход по одной бирже: отбор, метрики, отчёт, запись в базу."""
+    filters = DEFAULT.filters[client.NAME]
 
-    instruments = binance.get_instruments()
-    passed, filter_stats = apply_filters(instruments)
-    print(render_filter_stats(filter_stats))
+    instruments = client.get_instruments()
+    passed, filter_stats = apply_filters(instruments, filters)
+    print(render_filter_stats(filter_stats, filters))
 
-    windows, load_stats = load_candles(passed, last_closed_open)
+    windows, load_stats = load_candles(client, passed, last_closed_open)
     print(render_load_stats(load_stats))
 
     metrics_by_symbol, skipped = compute_all(windows)
@@ -54,7 +54,7 @@ def main() -> None:
     print()
     print(
         render_funnel(
-            exchange=f"{EXCHANGE} USDT-M perp",
+            exchange=f"{client.NAME} {client.MARKET}",
             total=filter_stats.total,
             passed=filter_stats.passed,
             analysed=len(metrics_by_symbol),
@@ -73,6 +73,8 @@ def main() -> None:
     print()
     print(
         store_run(
+            connection=connection,
+            exchange=client.NAME,
             last_closed_open=last_closed_open,
             total_symbols=filter_stats.total,
             passed_filters=filter_stats.passed,
@@ -85,6 +87,8 @@ def main() -> None:
 
 
 def store_run(
+    connection: sqlite3.Connection,
+    exchange: str,
     last_closed_open: int,
     total_symbols: int,
     passed_filters: int,
@@ -93,23 +97,20 @@ def store_run(
     candidates: list,
     turnover: dict[str, float],
 ) -> str:
-    """Сохранить прогон в базу и вернуть строку для вывода."""
-    connection = connect()
-    try:
-        duplicate = run_exists(connection, to_iso(last_closed_open))
+    """Сохранить прогон одной биржи и вернуть строку для вывода."""
+    duplicate = run_exists(connection, exchange, to_iso(last_closed_open))
 
-        run_id = save_run(
-            connection,
-            candle_open_ms=last_closed_open,
-            total_symbols=total_symbols,
-            passed_filters=passed_filters,
-            analysed_symbols=analysed_symbols,
-            candidates_count=candidates_total,
-            config=DEFAULT,
-        )
-        save_candidates(connection, run_id, EXCHANGE, candidates, turnover)
-    finally:
-        connection.close()
+    run_id = save_run(
+        connection,
+        exchange=exchange,
+        candle_open_ms=last_closed_open,
+        total_symbols=total_symbols,
+        passed_filters=passed_filters,
+        analysed_symbols=analysed_symbols,
+        candidates_count=candidates_total,
+        config=DEFAULT,
+    )
+    save_candidates(connection, run_id, exchange, candidates, turnover)
 
     warning = (
         "\nВнимание: для этой свечи прогон уже был. Запись добавлена, "
@@ -118,6 +119,21 @@ def store_run(
         else ""
     )
     return f"Прогон сохранён в базу: runs.id = {run_id}{warning}"
+
+
+def main() -> None:
+    # Граница считается один раз и по времени первой биржи: свечи 15m у бирж
+    # совпадают по стенным часам, и оба списка должны относиться к одной свече.
+    last_closed_open = last_closed_open_time(EXCHANGES[0].fetch_server_time())
+    print(render_header(last_closed_open))
+
+    connection = connect()
+    try:
+        for client in EXCHANGES:
+            print()
+            analyse(client, last_closed_open, connection)
+    finally:
+        connection.close()
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@
 в объяснении есть и коэффициент, и абсолютное число.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from src.config import DEFAULT
@@ -123,6 +125,33 @@ def test_summary_for_trades_and_spread_without_volume():
 
     assert "оборот — нет" in text
     assert "мельче обычной" in text
+
+
+def without_trade_counts() -> Metrics:
+    """Метрики биржи, которая не публикует число сделок (OKX)."""
+    return replace(
+        make_metrics(rvol=4.1, ve=2.4), rtc=None, trades=None, trades_median=None
+    )
+
+
+def test_reason_about_trades_disappears_when_there_is_no_such_data():
+    """Показывать строку с прочерком нельзя: она выглядела бы как результат
+    измерения, хотя измерения не было."""
+    reasons = build_reasons(without_trade_counts())
+
+    assert len(reasons) == 2
+    assert all("Сделок" not in reason.what for reason in reasons)
+
+
+def test_summary_says_that_the_exchange_hides_trade_counts():
+    text = summary(without_trade_counts())
+
+    assert "Число сделок биржа не публикует" in text
+    assert "Средняя сделка" not in text
+
+
+def test_ats_is_undefined_without_trade_counts():
+    assert ats(without_trade_counts()) is None
 
 
 def test_summary_never_calls_a_near_threshold_metric_usual():

@@ -6,8 +6,8 @@
 
 from dataclasses import replace
 
-from src.config import DEFAULT
-from src.exchanges.binance import Instrument
+from src.config import BINANCE_FILTERS, OKX_FILTERS
+from src.exchanges.base import Instrument
 from src.filters import apply_filters, rejection_reason
 
 
@@ -55,8 +55,8 @@ def test_thresholds_themselves_pass():
     неравенства.
     """
     on_the_edge = make_instrument(
-        quote_volume_24h=float(DEFAULT.min_quote_volume_24h),
-        trades_24h=DEFAULT.min_trades_24h,
+        quote_volume_24h=float(BINANCE_FILTERS.min_quote_volume_24h),
+        trades_24h=BINANCE_FILTERS.min_trades_24h,
     )
     assert rejection_reason(on_the_edge) is None
 
@@ -74,11 +74,19 @@ def test_thresholds_come_from_the_config():
     """Смысл конфига: пороги можно поменять, не трогая код фильтров.
     Это же понадобится на этапе 10, чтобы пересчитать прогоны с другими
     значениями и сравнить результаты."""
-    strict = replace(DEFAULT, min_quote_volume_24h=200_000_000)
+    strict = replace(BINANCE_FILTERS, min_quote_volume_24h=200_000_000)
     instrument = make_instrument(quote_volume_24h=100_000_000.0)
 
     assert rejection_reason(instrument) is None
     assert rejection_reason(instrument, strict) == "volume"
+
+
+def test_trades_filter_is_skipped_when_the_exchange_has_no_such_data():
+    """У OKX числа сделок нет ни в свечах, ни в тикере. Фильтр по нему
+    должен пропускаться, а не считать отсутствие данных нулём сделок."""
+    without_trades = make_instrument(status="live", trades_24h=None)
+
+    assert rejection_reason(without_trades, OKX_FILTERS) is None
 
 
 def test_apply_filters_splits_list_and_counts_reasons():

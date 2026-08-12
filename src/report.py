@@ -19,7 +19,7 @@ from src.candles import (
     INTERVAL_MS,
     LoadStats,
 )
-from src.config import DEFAULT, Config
+from src.config import BINANCE_FILTERS, DEFAULT, Config, ExchangeFilters
 from src.filters import FilterStats
 from src.metrics import Metrics
 from src.scoring import Candidate
@@ -62,14 +62,18 @@ def format_amount(value: float) -> str:
 
 
 def format_symbol(symbol: str) -> str:
-    """COTIUSDT -> 'COTIUSDT · PERP'.
+    """COTIUSDT -> 'COTIUSDT · PERP', COTI-USDT-SWAP -> без изменений.
 
     Тикер печатается ровно так, как он называется на бирже, без слэша:
     запись вида COTI/USDT привычно означает спотовую пару, а анализируются
     только бессрочные фьючерсы. Метка PERP убирает эту двусмысленность —
     у одного и того же актива спот и перпетуал живут своей жизнью, и путать
     их при переходе к графику нельзя.
+
+    Тикерам OKX метка не нужна: в них уже есть SWAP.
     """
+    if symbol.endswith("-SWAP"):
+        return symbol
     return f"{symbol} · PERP"
 
 
@@ -89,20 +93,26 @@ def format_candle_close(open_time_ms: int) -> str:
 def ats(metrics: Metrics) -> float | None:
     """Во сколько раз изменился средний размер сделки (раздел 6.5 spec.md).
 
-    Тождественно равно RVOL / RTC. None, если сделок в свече не было вовсе:
-    у кандидатов такого быть не может, но функция не должна падать.
+    Тождественно равно RVOL / RTC. None в двух случаях: биржа не публикует
+    число сделок (тогда RTC не посчитан) или сделок в свече не было вовсе.
     """
-    return metrics.rvol / metrics.rtc if metrics.rtc else None
+    if metrics.rtc is None or metrics.rtc == 0:
+        return None
+    return metrics.rvol / metrics.rtc
 
 
 def build_reasons(metrics: Metrics, config: Config = DEFAULT) -> list[Reason]:
-    """Три причины — по одной на метрику, в порядке разделов 6.1-6.3 spec.md.
+    """Причины — по одной на посчитанную метрику, в порядке разделов 6.1-6.3.
 
-    Возвращаются все три, включая несработавшие: то, что диапазон свечи
-    остался обычным, — тоже содержательная информация. Разделять их на блоки
-    в отчёте будет рендер, по полю triggered.
+    Возвращаются и несработавшие: то, что диапазон свечи остался обычным, —
+    тоже содержательная информация. Разделять их на блоки в отчёте будет
+    рендер, по полю triggered.
+
+    Причины по числу сделок нет вовсе, если биржа этих данных не публикует.
+    Показать её с прочерком было бы хуже: строка выглядела бы как результат
+    измерения, хотя измерения не было.
     """
-    return [
+    reasons = [
         Reason(
             what=f"Объём свечи {compact(metrics.volume)} USDT",
             ratio=f"в {metrics.rvol:.1f}× выше обычного",
@@ -110,21 +120,47 @@ def build_reasons(metrics: Metrics, config: Config = DEFAULT) -> list[Reason]:
             triggered=metrics.rvol >= config.rvol_threshold,
             threshold=f"порог {config.rvol_threshold}×",
         ),
-        Reason(
-            what=f"Сделок {format_amount(metrics.trades)}",
-            ratio=f"в {metrics.rtc:.1f}× больше обычного",
-            usual=f"обычно {format_amount(metrics.trades_median)} за свечу",
-            triggered=metrics.rtc >= config.rtc_threshold,
-            threshold=f"порог {config.rtc_threshold}×",
-        ),
+    ]
+
+    if metrics.rtc is not None:
+        reasons.append(
+            Reason(
+                what=f"Сделок {format_amount(metrics.trades)}",
+                ratio=f"в {metrics.rtc:.1f}× больше обычного",
+                usual=f"обычно {format_amount(metrics.trades_median)} за свечу",
+                triggered=metrics.rtc >= config.rtc_threshold,
+                threshold=f"порог {config.rtc_threshold}×",
+            )
+        )
+
+    reasons.append(
         Reason(
             what=f"Диапазон свечи {metrics.range_pct:.1f} %",
             ratio=f"в {metrics.ve:.1f}× шире обычного",
             usual=f"обычно {metrics.range_pct_median:.1f} %",
             triggered=metrics.ve >= config.ve_threshold,
             threshold=f"порог {config.ve_threshold}×",
-        ),
-    ]
+        )
+    )
+    return reasons
+
+
+def _sentence_without_trade_counts(volume: bool, spread: bool) -> str:
+    """Фраза для биржи, которая не публикует число сделок.
+
+    Кандидатом здесь можно стать только с обеими метриками: доступных две,
+    а требуется не меньше двух. Поэтому случай ровно один.
+    """
+    if volume and spread:
+        return (
+            "Выше порога и объём, и диапазон свечи — инструмент вышел "
+            "из своего обычного режима. Число сделок биржа не публикует, "
+            "поэтому RTC и средний размер сделки не считались."
+        )
+    return (
+        "Число сделок биржа не публикует: посчитаны только объём "
+        "и диапазон свечи."
+    )
 
 
 def _pattern_sentence(volume: bool, trades: bool, spread: bool) -> str:
@@ -159,8 +195,14 @@ def _pattern_sentence(volume: bool, trades: bool, spread: bool) -> str:
 
 def summary(metrics: Metrics, config: Config = DEFAULT) -> str:
     """Итоговая фраза: что показал набор метрик и что стало с размером сделки."""
-    volume, trades, spread = (reason.triggered for reason in build_reasons(metrics, config))
-    sentences = [_pattern_sentence(volume, trades, spread)]
+    flags = [reason.triggered for reason in build_reasons(metrics, config)]
+
+    if metrics.rtc is None:
+        volume, spread = flags
+        sentences = [_sentence_without_trade_counts(volume, spread)]
+    else:
+        volume, trades, spread = flags
+        sentences = [_pattern_sentence(volume, trades, spread)]
 
     size = ats(metrics)
     if size is None:
@@ -185,23 +227,30 @@ def render_header(last_closed_open: int) -> str:
     )
 
 
-def reason_labels(config: Config = DEFAULT) -> dict[str, str]:
+def reason_labels(filters: ExchangeFilters = BINANCE_FILTERS) -> dict[str, str]:
     """Подписи к причинам отсева.
 
     Числа подставляются из конфига, а не пишутся руками: иначе после правки
     порога отчёт продолжил бы показывать старое значение, и заметить это
     по выводу было бы невозможно.
     """
+    trades = (
+        "биржа не отдаёт число сделок"
+        if filters.min_trades_24h is None
+        else f"сделок < {format_amount(filters.min_trades_24h)}"
+    )
     return {
-        "status": f"статус торгов не {config.active_status}",
-        "volume": f"оборот < {compact(config.min_quote_volume_24h)} USDT",
-        "trades": f"сделок < {format_amount(config.min_trades_24h)}",
+        "status": f"статус торгов не {filters.active_status}",
+        "volume": f"оборот < {compact(filters.min_quote_volume_24h)} USDT",
+        "trades": trades,
     }
 
 
-def render_filter_stats(stats: FilterStats, config: Config = DEFAULT) -> str:
+def render_filter_stats(
+    stats: FilterStats, filters: ExchangeFilters = BINANCE_FILTERS
+) -> str:
     """Сводка по отсеву на этапе фильтров."""
-    labels = reason_labels(config)
+    labels = reason_labels(filters)
     lines = ["Отсев:"]
     lines += [
         f"  {labels[reason]:<28}{count:>5}" for reason, count in stats.rejected.items()

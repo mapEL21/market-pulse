@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from statistics import median
 
 from src.candles import WINDOW_CANDLES
-from src.exchanges.binance import Candle
+from src.exchanges.base import Candle
 
 
 @dataclass
@@ -26,15 +26,15 @@ class Metrics:
     """
 
     rvol: float
-    rtc: float
+    rtc: float | None         # None, если биржа не публикует число сделок
     ve: float
     change_pct: float
 
     close: float              # цена закрытия анализируемой свечи
     volume: float             # оборот анализируемой свечи, USDT
     volume_median: float      # обычный оборот свечи за 48 ч
-    trades: int
-    trades_median: float
+    trades: int | None
+    trades_median: float | None
     range_pct: float          # диапазон свечи в процентах от цены
     range_pct_median: float
 
@@ -85,20 +85,30 @@ def compute_metrics(window: list[Candle]) -> Metrics | None:
     current = window[-1]
     previous = window[-2]
 
+    # Число сделок есть не у всех бирж: OKX не публикует его ни в свечах,
+    # ни в тикере. Тогда RTC не считается, а score нормируется по двум
+    # оставшимся метрикам (см. scoring.py).
+    trade_counts = [candle.trades for candle in baseline]
+    has_trades = current.trades is not None and all(
+        count is not None for count in trade_counts
+    )
+    trades_median = median(trade_counts) if has_trades else None
+
     volume_median = median(candle.quote_volume for candle in baseline)
-    trades_median = median(candle.trades for candle in baseline)
     range_median = median(
         normalized_true_range(candle, window[index - 1].close)
         for index, candle in enumerate(window[1:-1], start=1)
     )
     current_range = normalized_true_range(current, previous.close)
 
-    if 0 in (volume_median, trades_median, range_median, previous.close):
+    if 0 in (volume_median, range_median, previous.close):
+        return None
+    if has_trades and trades_median == 0:
         return None
 
     return Metrics(
         rvol=current.quote_volume / volume_median,
-        rtc=current.trades / trades_median,
+        rtc=current.trades / trades_median if has_trades else None,
         ve=current_range / range_median,
         change_pct=(current.close - previous.close) / previous.close * 100,
         close=current.close,

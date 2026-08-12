@@ -33,43 +33,75 @@ def normalized(value: float, threshold: float, cap: float) -> float:
     return min(value / threshold, cap)
 
 
-def score(metrics: Metrics, config: Config = DEFAULT) -> float:
-    """Взвешенная сумма нормированных метрик.
+def _weighted_components(
+    metrics: Metrics, config: Config
+) -> list[tuple[float, float]]:
+    """Пары (вес, нормированное значение) по метрикам, которые удалось посчитать."""
+    components = [
+        (
+            config.rvol_weight,
+            normalized(metrics.rvol, config.rvol_threshold, config.score_cap),
+        ),
+        (
+            config.ve_weight,
+            normalized(metrics.ve, config.ve_threshold, config.score_cap),
+        ),
+    ]
+    if metrics.rtc is not None:
+        components.append(
+            (
+                config.rtc_weight,
+                normalized(metrics.rtc, config.rtc_threshold, config.score_cap),
+            )
+        )
+    return components
 
-    Веса в сумме дают 1.0, поэтому инструмент, у которого все три метрики
-    ровно на порогах, получает score ровно 1.0.
+
+def score(metrics: Metrics, config: Config = DEFAULT) -> float:
+    """Средневзвешенное нормированных метрик.
+
+    Деление на сумму весов существенно, когда метрик не три, а две: у OKX нет
+    числа сделок, и без нормировки максимум score там был бы 0.7 вместо 1.0,
+    а инструмент ровно на порогах получал бы 0.7. Шкала перестала бы значить
+    одно и то же на разных биржах.
+
+    Когда доступны все три метрики, сумма весов равна единице, и формула
+    сводится к записанной в разделе 7 spec.md.
     """
-    return (
-        config.rvol_weight
-        * normalized(metrics.rvol, config.rvol_threshold, config.score_cap)
-        + config.rtc_weight
-        * normalized(metrics.rtc, config.rtc_threshold, config.score_cap)
-        + config.ve_weight
-        * normalized(metrics.ve, config.ve_threshold, config.score_cap)
-    )
+    components = _weighted_components(metrics, config)
+    total_weight = sum(weight for weight, _ in components)
+    return sum(weight * value for weight, value in components) / total_weight
+
+
+def available_metrics(metrics: Metrics) -> int:
+    """Сколько метрик вообще удалось посчитать для этого инструмента."""
+    return 3 if metrics.rtc is not None else 2
 
 
 def triggered_metrics(metrics: Metrics, config: Config = DEFAULT) -> int:
-    """Сколько метрик из трёх достигли своего порога.
+    """Сколько метрик достигли своего порога.
 
     Неравенство нестрогое: раздел 6 spec.md задаёт пороги как «RVOL >= 3.0».
     Это противоположно фильтрам этапа 2, где неравенства строгие.
     """
-    return sum(
-        (
-            metrics.rvol >= config.rvol_threshold,
-            metrics.rtc >= config.rtc_threshold,
-            metrics.ve >= config.ve_threshold,
-        )
-    )
+    triggered = [
+        metrics.rvol >= config.rvol_threshold,
+        metrics.ve >= config.ve_threshold,
+    ]
+    if metrics.rtc is not None:
+        triggered.append(metrics.rtc >= config.rtc_threshold)
+    return sum(triggered)
 
 
 def is_candidate(metrics: Metrics, config: Config = DEFAULT) -> bool:
-    """Прошёл ли инструмент правило «хотя бы две метрики из трёх».
+    """Прошёл ли инструмент правило «хотя бы две метрики».
 
     Защита от разовой аномалии в одном показателе: всплеск объёма без роста
     числа сделок и без расширения диапазона чаще всего означает одну крупную
     сделку, а не смену режима инструмента.
+
+    Отдельного случая для двух доступных метрик не нужно: правило «не меньше
+    двух» при двух метриках само превращается в «обе», что как раз и требуется.
     """
     return triggered_metrics(metrics, config) >= config.min_triggered_metrics
 

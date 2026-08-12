@@ -24,6 +24,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     id                INTEGER PRIMARY KEY,
     started_at        TEXT NOT NULL,
+    exchange          TEXT NOT NULL,
     candle_time       TEXT NOT NULL,
     total_symbols     INTEGER,
     passed_filters    INTEGER,
@@ -88,21 +89,28 @@ def connect(path: Path | str = DB_PATH) -> sqlite3.Connection:
     return connection
 
 
-def run_exists(connection: sqlite3.Connection, candle_time: str) -> bool:
-    """Есть ли уже прогон для этой свечи.
+def run_exists(
+    connection: sqlite3.Connection, exchange: str, candle_time: str
+) -> bool:
+    """Есть ли уже прогон этой биржи для этой свечи.
+
+    Биржа входит в проверку: один запуск программы записывает по строке
+    на каждую биржу, и это не дубли.
 
     Повторный прогон не запрещается: на этапе 10 понадобится пересчитать ту же
     свечу с другими порогами и сравнить. Но знать о дубле полезно — при
     разработке программа запускается по несколько раз внутри одной свечи.
     """
     row = connection.execute(
-        "SELECT 1 FROM runs WHERE candle_time = ? LIMIT 1", (candle_time,)
+        "SELECT 1 FROM runs WHERE exchange = ? AND candle_time = ? LIMIT 1",
+        (exchange, candle_time),
     ).fetchone()
     return row is not None
 
 
 def save_run(
     connection: sqlite3.Connection,
+    exchange: str,
     candle_open_ms: int,
     total_symbols: int,
     passed_filters: int,
@@ -110,16 +118,22 @@ def save_run(
     candidates_count: int,
     config: Config,
 ) -> int:
-    """Записать прогон и вернуть его id."""
+    """Записать прогон одной биржи и вернуть его id.
+
+    Строка на биржу, а не на запуск: воронка у каждой биржи своя, и в одну
+    строку две не помещаются. Связь «оба списка получены одновременно»
+    восстанавливается по candle_time.
+    """
     cursor = connection.execute(
         """
         INSERT INTO runs (
-            started_at, candle_time, total_symbols, passed_filters,
+            started_at, exchange, candle_time, total_symbols, passed_filters,
             analysed_symbols, candidates_count, config_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             to_iso(int(datetime.now(tz=timezone.utc).timestamp() * 1000)),
+            exchange,
             to_iso(candle_open_ms),
             total_symbols,
             passed_filters,
