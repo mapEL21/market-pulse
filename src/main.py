@@ -2,12 +2,20 @@
 
 Запуск: python -m src.main
 
-Реализован этап 1: список бессрочных USDT-контрактов Binance
-с 24-часовой статистикой. Фильтры, метрики и отчёт — следующие этапы.
+Реализованы этапы 1-2: список бессрочных USDT-контрактов Binance
+с 24-часовой статистикой и отсев неликвида. Метрики, скоринг и отчёт —
+следующие этапы.
 """
 
 from src.exchanges import binance
 from src.exchanges.binance import Instrument
+from src.filters import (
+    MIN_QUOTE_VOLUME_24H,
+    MIN_TRADES_24H,
+    ACTIVE_STATUS,
+    FilterStats,
+    apply_filters,
+)
 
 
 def format_amount(value: float) -> str:
@@ -29,12 +37,37 @@ def format_price(value: float) -> str:
     return f"{value:,.8g}".replace(",", " ")
 
 
-def print_instruments(instruments: list[Instrument]) -> None:
-    """Напечатать таблицу инструментов целиком."""
-    print(f"BINANCE USDT-M perpetual — инструментов: {len(instruments)}")
+def reason_labels() -> dict[str, str]:
+    """Подписи к причинам отсева.
+
+    Числа в подписях подставляются из самих порогов, а не пишутся руками:
+    иначе после правки порога в filters.py отчёт продолжил бы показывать
+    старое значение, и понять это по выводу было бы невозможно.
+    """
+    return {
+        "status": f"статус торгов не {ACTIVE_STATUS}",
+        "volume": f"оборот < {format_amount(MIN_QUOTE_VOLUME_24H)} USDT",
+        "trades": f"сделок < {format_amount(MIN_TRADES_24H)}",
+    }
+
+
+def print_filter_stats(stats: FilterStats) -> None:
+    """Напечатать сводку по отсеву."""
+    print(
+        f"BINANCE USDT-M perpetual — проверено {stats.total}, "
+        f"после фильтров {stats.passed}"
+    )
     print("24-часовой тикер, оборот в USDT, сортировка по убыванию оборота.")
     print()
+    print("Отсев:")
 
+    labels = reason_labels()
+    for reason, count in stats.rejected.items():
+        print(f"  {labels[reason]:<28}{count:>5}")
+
+
+def print_instruments(instruments: list[Instrument]) -> None:
+    """Напечатать таблицу инструментов целиком."""
     header = (
         f"{'#':>4}  {'SYMBOL':<14}{'ОБОРОТ 24Ч':>18}"
         f"{'СДЕЛОК 24Ч':>14}{'ЦЕНА':>16}{'ИЗМ. 24Ч':>11}"
@@ -53,7 +86,12 @@ def print_instruments(instruments: list[Instrument]) -> None:
 
 
 def main() -> None:
-    print_instruments(binance.get_instruments())
+    instruments = binance.get_instruments()
+    passed, stats = apply_filters(instruments)
+
+    print_filter_stats(stats)
+    print()
+    print_instruments(passed)
 
 
 if __name__ == "__main__":
