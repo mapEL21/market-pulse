@@ -72,6 +72,12 @@ def to_iso(moment_ms: int) -> str:
     return moment.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def from_iso(text: str) -> int:
+    """'2026-08-12 23:00:00' -> миллисекунды UTC. Обратна to_iso."""
+    moment = datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    return int(moment.timestamp() * 1000)
+
+
 def connect(path: Path | str = DB_PATH) -> sqlite3.Connection:
     """Открыть базу, создать схему, включить проверку внешних ключей.
 
@@ -170,6 +176,58 @@ def save_candidates(
             _candidate_row(run_id, exchange, candidate, turnover)
             for candidate in candidates
         ],
+    )
+    connection.commit()
+
+
+def ripe_candidates(
+    connection: sqlite3.Connection, ripe_before: str
+) -> list[tuple]:
+    """Кандидаты, у которых ещё нет outcome, а время уже пришло.
+
+    Возвращает кортежи (id, exchange, symbol, price, candle_time).
+
+    LEFT JOIN с проверкой на NULL — обычный способ спросить «чего нет
+    во второй таблице». Сравнение времени работает как сравнение строк:
+    формат ISO для того и выбран.
+    """
+    return connection.execute(
+        """
+        SELECT c.id, c.exchange, c.symbol, c.price, r.candle_time
+        FROM candidates c
+        JOIN runs r ON r.id = c.run_id
+        LEFT JOIN outcomes o ON o.candidate_id = c.id
+        WHERE o.candidate_id IS NULL
+          AND r.candle_time <= ?
+        ORDER BY r.candle_time, c.exchange, c.rank
+        """,
+        (ripe_before,),
+    ).fetchall()
+
+
+def save_outcome(
+    connection: sqlite3.Connection,
+    candidate_id: int,
+    ret_30m: float | None,
+    ret_2h: float | None,
+    ret_8h: float | None,
+    max_move_2h: float | None,
+) -> None:
+    """Записать результат кандидата."""
+    connection.execute(
+        """
+        INSERT INTO outcomes (
+            candidate_id, ret_30m, ret_2h, ret_8h, max_move_2h, filled_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            candidate_id,
+            ret_30m,
+            ret_2h,
+            ret_8h,
+            max_move_2h,
+            to_iso(int(datetime.now(tz=timezone.utc).timestamp() * 1000)),
+        ),
     )
     connection.commit()
 
