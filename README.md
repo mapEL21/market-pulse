@@ -67,7 +67,7 @@ BINANCE   проверено 412 → после фильтров 287 → кан�
 ## Установка
 
 ```bash
-git clone https://github.com/<username>/market-pulse.git
+git clone https://github.com/mapEL21/market-pulse.git
 cd market-pulse
 
 python -m venv .venv
