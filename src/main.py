@@ -2,9 +2,9 @@
 
 Запуск: python -m src.main
 
-Реализованы этапы 1-3: список бессрочных USDT-контрактов Binance
-с 24-часовой статистикой, отсев неликвида и загрузка свечей.
-Метрики, скоринг и отчёт — следующие этапы.
+Реализованы этапы 1-4: список бессрочных USDT-контрактов Binance,
+отсев неликвида, загрузка свечей и расчёт метрик RVOL / RTC / VE.
+Скоринг и отчёт — следующие этапы.
 """
 
 from datetime import datetime, timezone
@@ -16,7 +16,6 @@ from src.candles import (
     load_candles,
 )
 from src.exchanges import binance
-from src.exchanges.binance import Instrument
 from src.filters import (
     MIN_QUOTE_VOLUME_24H,
     MIN_TRADES_24H,
@@ -24,6 +23,7 @@ from src.filters import (
     FilterStats,
     apply_filters,
 )
+from src.metrics import Metrics, compute_all
 
 
 def format_amount(value: float) -> str:
@@ -33,16 +33,6 @@ def format_amount(value: float) -> str:
     заметно легче сравнивать глазом, чем сплошное число.
     """
     return f"{value:,.0f}".replace(",", " ")
-
-
-def format_price(value: float) -> str:
-    """Цена с 8 значащими цифрами.
-
-    Цены различаются на порядки — 63758.1 и 0.007377 одновременно, — поэтому
-    фиксированное число знаков после запятой не подходит: оно либо обрежет
-    дешёвые инструменты до нуля, либо забьёт таблицу нулями у дорогих.
-    """
-    return f"{value:,.8g}".replace(",", " ")
 
 
 def reason_labels() -> dict[str, str]:
@@ -72,7 +62,6 @@ def print_filter_stats(stats: FilterStats, last_closed_open: int) -> None:
         f"после фильтров {stats.passed}"
     )
     print(f"свеча {INTERVAL}, открытие {format_candle_time(last_closed_open)}")
-    print("24-часовой тикер, оборот в USDT, сортировка по убыванию оборота.")
     print()
     print("Отсев:")
 
@@ -81,22 +70,29 @@ def print_filter_stats(stats: FilterStats, last_closed_open: int) -> None:
         print(f"  {labels[reason]:<28}{count:>5}")
 
 
-def print_instruments(instruments: list[Instrument]) -> None:
-    """Напечатать таблицу инструментов целиком."""
+def print_metrics(metrics_by_symbol: dict[str, Metrics]) -> None:
+    """Таблица метрик, по убыванию RVOL.
+
+    Сортировка по RVOL временная: на этапе 5 её заменит score, который
+    учитывает все три метрики сразу.
+    """
     header = (
-        f"{'#':>4}  {'SYMBOL':<14}{'ОБОРОТ 24Ч':>18}"
-        f"{'СДЕЛОК 24Ч':>14}{'ЦЕНА':>16}{'ИЗМ. 24Ч':>11}"
+        f"{'#':>4}  {'SYMBOL':<14}{'RVOL':>8}{'RTC':>8}{'VE':>8}{'CHG':>9}"
+        f"{'ОБЪЁМ СВЕЧИ':>16}{'ОБЫЧНО':>14}"
     )
     print(header)
     print("-" * len(header))
 
-    for number, instrument in enumerate(instruments, start=1):
+    ranked = sorted(
+        metrics_by_symbol.items(), key=lambda item: item[1].rvol, reverse=True
+    )
+    for number, (symbol, metrics) in enumerate(ranked, start=1):
         print(
-            f"{number:>4}  {instrument.symbol:<14}"
-            f"{format_amount(instrument.quote_volume_24h):>18}"
-            f"{format_amount(instrument.trades_24h):>14}"
-            f"{format_price(instrument.last_price):>16}"
-            f"{instrument.change_pct_24h:>10.2f}%"
+            f"{number:>4}  {symbol:<14}"
+            f"{metrics.rvol:>7.2f}x{metrics.rtc:>7.2f}x{metrics.ve:>7.2f}x"
+            f"{metrics.change_pct:>8.2f}%"
+            f"{format_amount(metrics.volume):>16}"
+            f"{format_amount(metrics.volume_median):>14}"
         )
 
 
@@ -120,13 +116,14 @@ def main() -> None:
 
     print_filter_stats(filter_stats, last_closed_open)
 
-    by_symbol, load_stats = load_candles(passed, last_closed_open)
+    windows, load_stats = load_candles(passed, last_closed_open)
     print_load_stats(load_stats)
+
+    metrics_by_symbol, skipped = compute_all(windows)
+    print(f"Метрика не посчитана (нулевая медиана): {len(skipped)}")
     print()
 
-    print_instruments(
-        [instrument for instrument in passed if instrument.symbol in by_symbol]
-    )
+    print_metrics(metrics_by_symbol)
 
 
 if __name__ == "__main__":

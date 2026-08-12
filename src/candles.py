@@ -24,12 +24,16 @@ INTERVAL_MS = 15 * 60 * 1000
 BASELINE_HOURS = 48
 BASELINE_CANDLES = BASELINE_HOURS * 60 * 60 * 1000 // INTERVAL_MS  # 192 на 15m
 
-# Базовое окно плюс сама анализируемая свеча.
-REQUIRED_CANDLES = BASELINE_CANDLES + 1
+# Базовое окно, анализируемая свеча и ещё одна свеча перед окном.
+# Самая ранняя в расчёты не входит: она нужна только как Close_(i-1) для
+# True Range первой свечи базового окна (раздел 6.3 spec.md). Без неё медиана
+# TR считалась бы по 191 значению, а RVOL и RTC — по 192, и метрики одного
+# инструмента опирались бы на окна разной длины.
+WINDOW_CANDLES = BASELINE_CANDLES + 2
 
 # Небольшой запас сверх нужного: если биржа по какой-то причине вернёт
 # лишнюю свечу за границей, analysis_window обрежет список до нужной длины.
-FETCH_LIMIT = REQUIRED_CANDLES + 2
+FETCH_LIMIT = WINDOW_CANDLES + 1
 
 CACHE_DIR = Path("data") / "cache"
 
@@ -56,13 +60,13 @@ def closed_candles(candles: list[Candle], last_closed_open: int) -> list[Candle]
 
 
 def analysis_window(candles: list[Candle], last_closed_open: int) -> list[Candle]:
-    """Ровно REQUIRED_CANDLES свечей, последняя из которых — граничная.
+    """Ровно WINDOW_CANDLES свечей, последняя из которых — граничная.
 
     Обрезка сверху обязательна, а не для красоты: базовое окно по разделу 4
     spec.md — ровно 192 свечи. Лишняя свеча в начале сместила бы медиану,
     и метрики двух инструментов считались бы по окнам разной длины.
     """
-    return closed_candles(candles, last_closed_open)[-REQUIRED_CANDLES:]
+    return closed_candles(candles, last_closed_open)[-WINDOW_CANDLES:]
 
 
 @dataclass
@@ -72,7 +76,7 @@ class LoadStats:
     requested: int      # сколько инструментов пришло с этапа фильтров
     from_cache: int     # взято из кэша, без запроса к бирже
     from_api: int       # скачано
-    too_short: int      # отсеяно: истории меньше REQUIRED_CANDLES
+    too_short: int      # отсеяно: истории меньше WINDOW_CANDLES
     loaded: int         # готово к расчёту метрик
     elapsed_sec: float
     used_weight: int    # израсходованный вес за минуту, по данным биржи
@@ -136,7 +140,7 @@ def load_candles(
         else:
             from_cache += 1
 
-        if len(candles) < REQUIRED_CANDLES:
+        if len(candles) < WINDOW_CANDLES:
             too_short += 1
             continue
 

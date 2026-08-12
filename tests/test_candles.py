@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from src.candles import (
     BASELINE_CANDLES,
     INTERVAL_MS,
-    REQUIRED_CANDLES,
+    WINDOW_CANDLES,
     analysis_window,
     closed_candles,
     last_closed_open_time,
@@ -52,9 +52,10 @@ RAW_KLINE = [
 
 
 def test_baseline_window_is_derived_from_hours():
-    """48 часов на таймфрейме 15m — это 192 свечи, плюс сама анализируемая."""
+    """48 часов на 15m — 192 свечи базы, плюс анализируемая, плюс одна перед
+    окном как источник Close_(i-1) для первой True Range."""
     assert BASELINE_CANDLES == 192
-    assert REQUIRED_CANDLES == 193
+    assert WINDOW_CANDLES == 194
 
 
 def test_boundary_in_the_middle_of_a_candle():
@@ -95,17 +96,17 @@ def test_analysis_window_trims_extra_candles_from_the_start():
     """Если свечей пришло больше нужного, лишние отрезаются от начала:
     базовое окно должно быть ровно 192 свечи, иначе поедет медиана."""
     boundary = ms(14, 0)
-    first_open = boundary - (REQUIRED_CANDLES + 4) * INTERVAL_MS
+    first_open = boundary - (WINDOW_CANDLES + 4) * INTERVAL_MS
     candles = [
         make_candle(first_open + step * INTERVAL_MS)
-        for step in range(REQUIRED_CANDLES + 5)
+        for step in range(WINDOW_CANDLES + 5)
     ]
 
     window = analysis_window(candles, boundary)
 
-    assert len(window) == REQUIRED_CANDLES
+    assert len(window) == WINDOW_CANDLES
     assert window[-1].open_time == boundary
-    assert window[0].open_time == boundary - BASELINE_CANDLES * INTERVAL_MS
+    assert window[0].open_time == boundary - (WINDOW_CANDLES - 1) * INTERVAL_MS
 
 
 def test_analysis_window_leaves_short_history_short():
