@@ -25,7 +25,7 @@ class Config:
     # --- Фильтры, раздел 5 spec.md ---
     # Неравенства строгие: значение ровно на пороге проходит фильтр.
     active_status: str = "TRADING"
-    min_quote_volume_24h: float = 5_000_000  # USDT за 24 часа
+    min_quote_volume_24h: float = 50_000_000  # USDT за 24 часа
     min_trades_24h: int = 10_000
 
     # --- Пороги интереса, раздел 6 spec.md ---

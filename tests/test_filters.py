@@ -45,12 +45,19 @@ def test_inactive_status_is_rejected():
 
 
 def test_thresholds_themselves_pass():
-    """В spec.md неравенства строгие: «< 5 000 000» и «< 10 000».
+    """В spec.md неравенства строгие: «оборот < порога», «сделок < порога».
 
     Значение ровно на пороге должно проходить. Легко случайно написать <=
     и молча потерять инструменты на границе.
+
+    Пороги берутся из конфига, а не пишутся числами: иначе тест ломается
+    при каждой правке порога, хотя проверяет он не значение, а строгость
+    неравенства.
     """
-    on_the_edge = make_instrument(quote_volume_24h=5_000_000.0, trades_24h=10_000)
+    on_the_edge = make_instrument(
+        quote_volume_24h=float(DEFAULT.min_quote_volume_24h),
+        trades_24h=DEFAULT.min_trades_24h,
+    )
     assert rejection_reason(on_the_edge) is None
 
 
