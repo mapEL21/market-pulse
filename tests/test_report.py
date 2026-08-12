@@ -28,6 +28,7 @@ def make_metrics(
         rtc=rtc,
         ve=ve,
         change_pct=0.0,
+        close=1.0,
         volume=volume,
         volume_median=volume_median,
         trades=trades,

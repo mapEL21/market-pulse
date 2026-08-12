@@ -22,6 +22,7 @@ def make_metrics(rvol: float = 1.0, rtc: float = 1.0, ve: float = 1.0) -> Metric
         rtc=rtc,
         ve=ve,
         change_pct=0.0,
+        close=1.0,
         volume=1.0,
         volume_median=1.0,
         trades=1,

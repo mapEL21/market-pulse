@@ -223,12 +223,23 @@ def render_load_stats(stats: LoadStats) -> str:
 
 
 def render_funnel(
-    exchange: str, total: int, passed: int, analysed: int, candidates: int
+    exchange: str,
+    total: int,
+    passed: int,
+    analysed: int,
+    candidates: int,
+    shown: int,
 ) -> str:
-    """Строка воронки: сколько инструментов осталось после каждого шага."""
+    """Строка воронки: сколько инструментов осталось после каждого шага.
+
+    Число кандидатов и число показанных различаются, когда список усечён
+    размером выдачи. Показывать вместо первого второе — значит скрывать,
+    что часть кандидатов не попала в отчёт.
+    """
+    truncated = f" (показаны {shown})" if shown < candidates else ""
     return (
         f"{exchange}   проверено {total} → после фильтров {passed} → "
-        f"с полной историей {analysed} → кандидатов {candidates}"
+        f"с полной историей {analysed} → кандидатов {candidates}{truncated}"
     )
 
 

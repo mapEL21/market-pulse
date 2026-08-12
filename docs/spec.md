@@ -249,10 +249,11 @@ BINANCE   проверено 412 → после фильтров 287 → кан�
 CREATE TABLE runs (
     id          INTEGER PRIMARY KEY,
     started_at  TEXT NOT NULL,      -- UTC ISO8601
-    candle_time TEXT NOT NULL,      -- время анализируемой свечи
-    total_symbols     INTEGER,
-    passed_filters    INTEGER,
-    candidates_count  INTEGER,
+    candle_time TEXT NOT NULL,      -- время открытия анализируемой свечи
+    total_symbols     INTEGER,      -- всего перпетуалов USDT на бирже
+    passed_filters    INTEGER,      -- прошло фильтры ликвидности
+    analysed_symbols  INTEGER,      -- осталось после отсева короткой истории
+    candidates_count  INTEGER,      -- прошло правило «2 метрики из 3»
     config_json TEXT                -- пороги и веса этого прогона
 );
 
@@ -266,7 +267,8 @@ CREATE TABLE candidates (
     score     REAL NOT NULL,
     rvol      REAL, rtc REAL, ve REAL,
     price     REAL, change_pct REAL,
-    volume_usdt REAL, trades INTEGER
+    volume_usdt REAL, trades INTEGER,
+    quote_volume_24h REAL           -- оборот инструмента за 24 ч на момент прогона
 );
 
 -- что было с ценой ПОСЛЕ попадания в список
@@ -279,6 +281,19 @@ CREATE TABLE outcomes (
     filled_at TEXT
 );
 ```
+
+Два поля добавлены к первоначальной схеме:
+
+- `candidates.quote_volume_24h` — без него нельзя проверить, отличается ли доля
+  отработавших кандидатов у инструментов разной ликвидности, а порог оборота
+  как раз является гипотезой. Восстановить это поле задним числом невозможно:
+  оборот за 24 ч меняется каждую секунду.
+- `runs.analysed_symbols` — воронка состоит из четырёх чисел, а не из трёх:
+  между фильтрами и кандидатами есть отсев по неполной истории.
+
+`candidates_count` — сколько инструментов прошло правило «две метрики из трёх».
+Строк в таблице при этом не больше `top_n`: список кандидатов усечён. Разница
+между этими числами сама по себе информативна и восстанавливается запросом.
 
 Таблица `outcomes` — самая важная для карьерной части проекта. Она превращает
 инструмент в **исследование**: позволяет SQL-запросами проверять,

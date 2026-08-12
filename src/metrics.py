@@ -30,6 +30,7 @@ class Metrics:
     ve: float
     change_pct: float
 
+    close: float              # цена закрытия анализируемой свечи
     volume: float             # оборот анализируемой свечи, USDT
     volume_median: float      # обычный оборот свечи за 48 ч
     trades: int
@@ -100,6 +101,7 @@ def compute_metrics(window: list[Candle]) -> Metrics | None:
         rtc=current.trades / trades_median,
         ve=current_range / range_median,
         change_pct=(current.close - previous.close) / previous.close * 100,
+        close=current.close,
         volume=current.quote_volume,
         volume_median=volume_median,
         trades=current.trades,
