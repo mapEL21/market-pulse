@@ -1,0 +1,27 @@
+# Виртуальное окружение
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Данные: база и кэш ответов API не попадают в репозиторий.
+# Они воспроизводимы, весят много и у каждого свои.
+data/*
+!data/.gitkeep
+
+# Локальные настройки и секреты
+.env
+config.local.py
+
+# Редакторы и ОС
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
