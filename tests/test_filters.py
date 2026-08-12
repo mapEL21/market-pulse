@@ -4,6 +4,9 @@
 Сеть не используется: инструменты собираются вручную.
 """
 
+from dataclasses import replace
+
+from src.config import DEFAULT
 from src.exchanges.binance import Instrument
 from src.filters import apply_filters, rejection_reason
 
@@ -58,6 +61,17 @@ def test_status_is_checked_before_liquidity():
         status="SETTLING", quote_volume_24h=0.0, trades_24h=0
     )
     assert rejection_reason(delisted_and_empty) == "status"
+
+
+def test_thresholds_come_from_the_config():
+    """Смысл конфига: пороги можно поменять, не трогая код фильтров.
+    Это же понадобится на этапе 10, чтобы пересчитать прогоны с другими
+    значениями и сравнить результаты."""
+    strict = replace(DEFAULT, min_quote_volume_24h=200_000_000)
+    instrument = make_instrument(quote_volume_24h=100_000_000.0)
+
+    assert rejection_reason(instrument) is None
+    assert rejection_reason(instrument, strict) == "volume"
 
 
 def test_apply_filters_splits_list_and_counts_reasons():

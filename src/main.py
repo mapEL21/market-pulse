@@ -2,9 +2,9 @@
 
 Запуск: python -m src.main
 
-Реализованы этапы 1-4: список бессрочных USDT-контрактов Binance,
-отсев неликвида, загрузка свечей и расчёт метрик RVOL / RTC / VE.
-Скоринг и отчёт — следующие этапы.
+Реализованы этапы 1-5: список бессрочных USDT-контрактов Binance,
+отсев неликвида, загрузка свечей, расчёт метрик RVOL / RTC / VE,
+скоринг и отбор кандидатов. Отчёт с объяснениями — следующий этап.
 """
 
 from datetime import datetime, timezone
@@ -15,15 +15,11 @@ from src.candles import (
     last_closed_open_time,
     load_candles,
 )
+from src.config import DEFAULT, Config
 from src.exchanges import binance
-from src.filters import (
-    MIN_QUOTE_VOLUME_24H,
-    MIN_TRADES_24H,
-    ACTIVE_STATUS,
-    FilterStats,
-    apply_filters,
-)
-from src.metrics import Metrics, compute_all
+from src.filters import FilterStats, apply_filters
+from src.metrics import compute_all
+from src.scoring import Candidate, is_candidate, select_candidates
 
 
 def format_amount(value: float) -> str:
@@ -35,17 +31,17 @@ def format_amount(value: float) -> str:
     return f"{value:,.0f}".replace(",", " ")
 
 
-def reason_labels() -> dict[str, str]:
+def reason_labels(config: Config = DEFAULT) -> dict[str, str]:
     """Подписи к причинам отсева.
 
-    Числа в подписях подставляются из самих порогов, а не пишутся руками:
-    иначе после правки порога в filters.py отчёт продолжил бы показывать
-    старое значение, и понять это по выводу было бы невозможно.
+    Числа в подписях подставляются из самого конфига, а не пишутся руками:
+    иначе после правки порога отчёт продолжил бы показывать старое значение,
+    и понять это по выводу было бы невозможно.
     """
     return {
-        "status": f"статус торгов не {ACTIVE_STATUS}",
-        "volume": f"оборот < {format_amount(MIN_QUOTE_VOLUME_24H)} USDT",
-        "trades": f"сделок < {format_amount(MIN_TRADES_24H)}",
+        "status": f"статус торгов не {config.active_status}",
+        "volume": f"оборот < {format_amount(config.min_quote_volume_24h)} USDT",
+        "trades": f"сделок < {format_amount(config.min_trades_24h)}",
     }
 
 
@@ -70,26 +66,30 @@ def print_filter_stats(stats: FilterStats, last_closed_open: int) -> None:
         print(f"  {labels[reason]:<28}{count:>5}")
 
 
-def print_metrics(metrics_by_symbol: dict[str, Metrics]) -> None:
-    """Таблица метрик, по убыванию RVOL.
+def print_candidates(
+    candidates: list[Candidate], total: int, config: Config = DEFAULT
+) -> None:
+    """Таблица кандидатов по убыванию score."""
+    print(
+        f"Пороги интереса: RVOL >= {config.rvol_threshold}, "
+        f"RTC >= {config.rtc_threshold}, VE >= {config.ve_threshold}; "
+        f"кандидат — не меньше {config.min_triggered_metrics} из 3"
+    )
+    print(f"Кандидатов: {total}, показаны {len(candidates)} (топ-{config.top_n})")
+    print()
 
-    Сортировка по RVOL временная: на этапе 5 её заменит score, который
-    учитывает все три метрики сразу.
-    """
     header = (
-        f"{'#':>4}  {'SYMBOL':<14}{'RVOL':>8}{'RTC':>8}{'VE':>8}{'CHG':>9}"
-        f"{'ОБЪЁМ СВЕЧИ':>16}{'ОБЫЧНО':>14}"
+        f"{'#':>4}  {'SYMBOL':<14}{'SCORE':>7}{'RVOL':>9}{'RTC':>9}{'VE':>8}"
+        f"{'CHG':>9}{'ОБЪЁМ СВЕЧИ':>16}{'ОБЫЧНО':>14}"
     )
     print(header)
     print("-" * len(header))
 
-    ranked = sorted(
-        metrics_by_symbol.items(), key=lambda item: item[1].rvol, reverse=True
-    )
-    for number, (symbol, metrics) in enumerate(ranked, start=1):
+    for candidate in candidates:
+        metrics = candidate.metrics
         print(
-            f"{number:>4}  {symbol:<14}"
-            f"{metrics.rvol:>7.2f}x{metrics.rtc:>7.2f}x{metrics.ve:>7.2f}x"
+            f"{candidate.rank:>4}  {candidate.symbol:<14}{candidate.score:>7.2f}"
+            f"{metrics.rvol:>8.2f}x{metrics.rtc:>8.2f}x{metrics.ve:>7.2f}x"
             f"{metrics.change_pct:>8.2f}%"
             f"{format_amount(metrics.volume):>16}"
             f"{format_amount(metrics.volume_median):>14}"
@@ -123,7 +123,10 @@ def main() -> None:
     print(f"Метрика не посчитана (нулевая медиана): {len(skipped)}")
     print()
 
-    print_metrics(metrics_by_symbol)
+    total = sum(
+        1 for metrics in metrics_by_symbol.values() if is_candidate(metrics)
+    )
+    print_candidates(select_candidates(metrics_by_symbol), total)
 
 
 if __name__ == "__main__":
