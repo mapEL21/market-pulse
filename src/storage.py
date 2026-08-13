@@ -48,7 +48,11 @@ CREATE TABLE IF NOT EXISTS observations (
     price       REAL,
     change_pct  REAL,
     volume_usdt REAL,
+    volume_median REAL,
     trades      INTEGER,
+    trades_median REAL,
+    range_pct   REAL,
+    range_pct_median REAL,
     quote_volume_24h REAL
 );
 
@@ -162,6 +166,40 @@ def save_run(
     return cursor.lastrowid
 
 
+def latest_run(connection: sqlite3.Connection, exchange: str) -> tuple | None:
+    """Последний прогон биржи: (id, source, candle_time, воронка).
+
+    Сортировка по времени свечи, а не по id: прогоны бэктеста пишутся позже,
+    но относятся к прошлому.
+    """
+    return connection.execute(
+        """
+        SELECT id, source, candle_time, total_symbols, passed_filters,
+               analysed_symbols, candidates_count
+        FROM runs
+        WHERE exchange = ?
+        ORDER BY candle_time DESC, id DESC
+        LIMIT 1
+        """,
+        (exchange,),
+    ).fetchone()
+
+
+def run_candidates(connection: sqlite3.Connection, run_id: int) -> list[tuple]:
+    """Кандидаты прогона по возрастанию ранга, со всеми числами для отчёта."""
+    return connection.execute(
+        """
+        SELECT symbol, rank, score, rvol, rtc, ve, price, change_pct,
+               volume_usdt, volume_median, trades, trades_median,
+               range_pct, range_pct_median, quote_volume_24h
+        FROM observations
+        WHERE run_id = ? AND rank IS NOT NULL
+        ORDER BY rank
+        """,
+        (run_id,),
+    ).fetchall()
+
+
 def observation_ids(connection: sqlite3.Connection, run_id: int) -> dict[str, int]:
     """symbol -> id для наблюдений одного прогона.
 
@@ -189,13 +227,20 @@ def save_observations(
 
     turnover — оборот за 24 ч по символам. В живом режиме он приходит
     из тикера, в бэктесте считается по свечам, поэтому передаётся отдельно.
+
+    Медианы хранятся рядом с текущими значениями, хотя формально выводятся
+    делением (volume_median = volume / rvol). Причина в разделе 8 spec.md:
+    отчёту нужны абсолютные числа «обычно столько-то», а восстанавливать их
+    делением — значит ломаться на нулевом rvol и заставлять читателя базы
+    догадываться, откуда взялось число.
     """
     connection.executemany(
         """
         INSERT INTO observations (
             run_id, exchange, symbol, rvol, rtc, ve, score, triggered, rank,
-            price, change_pct, volume_usdt, trades, quote_volume_24h
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            price, change_pct, volume_usdt, volume_median, trades,
+            trades_median, range_pct, range_pct_median, quote_volume_24h
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             _observation_row(run_id, exchange, observation, turnover)
@@ -286,6 +331,10 @@ def _observation_row(
         metrics.close,
         metrics.change_pct,
         metrics.volume,
+        metrics.volume_median,
         metrics.trades,
+        metrics.trades_median,
+        metrics.range_pct,
+        metrics.range_pct_median,
         turnover.get(observation.symbol),
     )
