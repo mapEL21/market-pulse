@@ -22,7 +22,7 @@ from src.candles import (
 from src.config import BINANCE_FILTERS, DEFAULT, Config, ExchangeFilters
 from src.filters import FilterStats
 from src.metrics import Metrics
-from src.scoring import Candidate
+from src.scoring import Observation
 
 LINE_WIDTH = 78
 
@@ -293,7 +293,7 @@ def render_funnel(
 
 
 def render_candidate(
-    candidate: Candidate, volume_24h: float, config: Config = DEFAULT
+    candidate: Observation, volume_24h: float, config: Config = DEFAULT
 ) -> str:
     """Карточка одного кандидата по образцу из раздела 8 spec.md."""
     metrics = candidate.metrics

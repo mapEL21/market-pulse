@@ -16,8 +16,8 @@ from src.outcomes import (
     TWO_HOURS_MS,
     compute_outcome,
 )
-from src.scoring import Candidate
-from src.storage import connect, save_candidates, save_run
+from src.scoring import Observation
+from src.storage import connect, save_observations, save_run
 
 T = 1786575600000  # 2026-08-12 23:00:00 UTC
 STEP_MS = 15 * 60 * 1000
@@ -156,7 +156,7 @@ class FakeClient:
         return raw
 
 
-def store_candidate(connection, symbol: str = "APRUSDT", rank: int = 1) -> None:
+def store_observation(connection, symbol: str = "APRUSDT", rank: int = 1) -> None:
     run_id = save_run(
         connection,
         exchange="BINANCE",
@@ -172,11 +172,15 @@ def store_candidate(connection, symbol: str = "APRUSDT", rank: int = 1) -> None:
         volume=1.0, volume_median=1.0, trades=1, trades_median=1.0,
         range_pct=1.0, range_pct_median=1.0,
     )
-    save_candidates(
+    save_observations(
         connection,
         run_id,
         "BINANCE",
-        [Candidate(symbol=symbol, rank=rank, score=2.0, metrics=metrics)],
+        [
+            Observation(
+                symbol=symbol, score=2.0, triggered=3, metrics=metrics, rank=rank
+            )
+        ],
         {symbol: 1.0},
     )
 
@@ -192,10 +196,10 @@ def connection(monkeypatch):
         conn.close()
 
 
-def test_unripe_candidates_are_left_alone(connection):
-    """Кандидат созревает только через 8 ч 15 мин: раньше нужной свечи
+def test_unripe_observations_are_left_alone(connection):
+    """Наблюдение созревает только через 8 ч 15 мин: раньше нужной свечи
     просто не существует."""
-    store_candidate(connection)
+    store_observation(connection)
 
     stats = outcomes.fill_outcomes(connection, now_ms=T + 4 * 60 * 60 * 1000)
 
@@ -203,8 +207,8 @@ def test_unripe_candidates_are_left_alone(connection):
     assert stats.filled == 0
 
 
-def test_ripe_candidate_gets_an_outcome(connection):
-    store_candidate(connection)
+def test_ripe_observation_gets_an_outcome(connection):
+    store_observation(connection)
 
     stats = outcomes.fill_outcomes(connection, now_ms=T + RIPE_AFTER_MS)
 
@@ -215,8 +219,8 @@ def test_ripe_candidate_gets_an_outcome(connection):
     assert row == (0.0, 0.0, 0.0, 0.0)
 
 
-def test_already_filled_candidates_are_not_refetched(connection):
-    store_candidate(connection)
+def test_already_filled_observations_are_not_refetched(connection):
+    store_observation(connection)
     outcomes.fill_outcomes(connection, now_ms=T + RIPE_AFTER_MS)
 
     again = outcomes.fill_outcomes(connection, now_ms=T + RIPE_AFTER_MS)
@@ -226,10 +230,10 @@ def test_already_filled_candidates_are_not_refetched(connection):
 
 
 def test_candles_are_fetched_once_per_instrument_and_candle(connection):
-    """Один и тот же кандидат встречается в нескольких прогонах одной свечи —
-    качать историю для него дважды незачем."""
-    store_candidate(connection)
-    store_candidate(connection)
+    """Один и тот же инструмент встречается в нескольких прогонах одной
+    свечи — качать историю для него дважды незачем."""
+    store_observation(connection)
+    store_observation(connection)
 
     stats = outcomes.fill_outcomes(connection, now_ms=T + RIPE_AFTER_MS)
 
@@ -242,7 +246,7 @@ def test_missing_history_is_counted_not_written(connection, monkeypatch):
     """Строка из одних NULL означала бы «результат посчитан и пуст».
     Инструмент без данных лучше оставить незаполненным."""
     monkeypatch.setitem(outcomes.CLIENTS, "BINANCE", FakeClient([]))
-    store_candidate(connection)
+    store_observation(connection)
 
     stats = outcomes.fill_outcomes(connection, now_ms=T + RIPE_AFTER_MS)
 

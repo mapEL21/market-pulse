@@ -11,13 +11,26 @@ from src.metrics import Metrics
 
 
 @dataclass
-class Candidate:
-    """Инструмент, отобранный для ручного просмотра."""
+class Observation:
+    """Инструмент, дошедший до расчёта метрик в одном прогоне.
+
+    Наблюдением становится каждый инструмент, а не только попавший в отчёт.
+    Иначе на вопросы вроде «а если бы порог RVOL был 5.0» ответить нечем:
+    инструментов ниже текущего порога в данных просто не окажется.
+
+    rank заполнен только у кандидатов — тех, кто прошёл правило «не меньше
+    двух метрик» и попал в топ-N. У остальных None.
+    """
 
     symbol: str
-    rank: int
     score: float
+    triggered: int      # сколько метрик достигли порога
     metrics: Metrics
+    rank: int | None = None
+
+    @property
+    def is_candidate(self) -> bool:
+        return self.rank is not None
 
 
 def normalized(value: float, threshold: float, cap: float) -> float:
@@ -106,10 +119,10 @@ def is_candidate(metrics: Metrics, config: Config = DEFAULT) -> bool:
     return triggered_metrics(metrics, config) >= config.min_triggered_metrics
 
 
-def select_candidates(
+def observe(
     metrics_by_symbol: dict[str, Metrics], config: Config = DEFAULT
-) -> list[Candidate]:
-    """Кандидаты по убыванию score, не больше config.top_n штук.
+) -> list[Observation]:
+    """Все наблюдения прогона, по убыванию score; ранг только у кандидатов.
 
     Порядок задаётся тройкой ключей: score по убыванию, RVOL по убыванию,
     символ по возрастанию.
@@ -126,16 +139,36 @@ def select_candidates(
     вводит в заблуждение. Символ остаётся последним ключом на случай полного
     совпадения и гарантирует воспроизводимость.
     """
-    scored = [
-        (symbol, score(metrics, config), metrics)
-        for symbol, metrics in metrics_by_symbol.items()
-        if is_candidate(metrics, config)
-    ]
-    scored.sort(key=lambda item: (-item[1], -item[2].rvol, item[0]))
-
-    return [
-        Candidate(symbol=symbol, rank=rank, score=value, metrics=metrics)
-        for rank, (symbol, value, metrics) in enumerate(
-            scored[: config.top_n], start=1
+    observations = [
+        Observation(
+            symbol=symbol,
+            score=score(metrics, config),
+            triggered=triggered_metrics(metrics, config),
+            metrics=metrics,
         )
+        for symbol, metrics in metrics_by_symbol.items()
+    ]
+    observations.sort(
+        key=lambda item: (-item.score, -item.metrics.rvol, item.symbol)
+    )
+
+    rank = 0
+    for observation in observations:
+        if rank >= config.top_n:
+            break
+        if observation.triggered >= config.min_triggered_metrics:
+            rank += 1
+            observation.rank = rank
+
+    return observations
+
+
+def select_candidates(
+    metrics_by_symbol: dict[str, Metrics], config: Config = DEFAULT
+) -> list[Observation]:
+    """Только кандидаты — те, у кого есть ранг."""
+    return [
+        observation
+        for observation in observe(metrics_by_symbol, config)
+        if observation.is_candidate
     ]

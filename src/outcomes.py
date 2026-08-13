@@ -18,7 +18,7 @@ from src.exchanges.base import Candle
 from src.storage import (
     connect,
     from_iso,
-    ripe_candidates,
+    ripe_observations,
     save_outcome,
     to_iso,
 )
@@ -103,7 +103,7 @@ def _max_move(
 class FillStats:
     """Итоги заполнения."""
 
-    ripe: int        # созревших кандидатов найдено
+    ripe: int        # созревших наблюдений найдено
     filled: int      # записано результатов
     fetched: int     # запросов к биржам (одна выборка на инструмент и свечу)
     no_data: int     # свечей не нашлось: делистинг или пропуск в истории
@@ -128,13 +128,13 @@ def fill_outcomes(connection: sqlite3.Connection, now_ms: int) -> FillStats:
     одной свечи, и качать для него историю дважды незачем.
     """
     ripe_before = to_iso(now_ms - RIPE_AFTER_MS)
-    rows = ripe_candidates(connection, ripe_before)
+    rows = ripe_observations(connection, ripe_before)
 
     seen: dict[tuple[str, str, int], list[Candle]] = {}
     filled = 0
     no_data = 0
 
-    for candidate_id, exchange, symbol, price, candle_time in rows:
+    for observation_id, exchange, symbol, price, candle_time in rows:
         candle_open_ms = from_iso(candle_time)
         key = (exchange, symbol, candle_open_ms)
 
@@ -154,7 +154,7 @@ def fill_outcomes(connection: sqlite3.Connection, now_ms: int) -> FillStats:
 
         save_outcome(
             connection,
-            candidate_id,
+            observation_id,
             outcome.ret_30m,
             outcome.ret_2h,
             outcome.ret_8h,

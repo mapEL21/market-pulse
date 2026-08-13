@@ -11,11 +11,11 @@ import pytest
 
 from src.config import DEFAULT
 from src.metrics import Metrics
-from src.scoring import Candidate
+from src.scoring import Observation
 from src.storage import (
     connect,
     run_exists,
-    save_candidates,
+    save_observations,
     save_run,
     to_iso,
 )
@@ -39,7 +39,9 @@ def connection():
         conn.close()
 
 
-def make_candidate(symbol: str = "APRUSDT", rank: int = 1) -> Candidate:
+def make_observation(
+    symbol: str = "APRUSDT", rank: int | None = 1
+) -> Observation:
     metrics = Metrics(
         rvol=793.3,
         rtc=459.5,
@@ -53,7 +55,9 @@ def make_candidate(symbol: str = "APRUSDT", rank: int = 1) -> Candidate:
         range_pct=11.0,
         range_pct_median=0.9,
     )
-    return Candidate(symbol=symbol, rank=rank, score=3.0, metrics=metrics)
+    return Observation(
+        symbol=symbol, score=3.0, triggered=3, metrics=metrics, rank=rank
+    )
 
 
 def store_run(conn, candidates_count: int = 5, exchange: str = "BINANCE") -> int:
@@ -131,19 +135,19 @@ def test_config_json_round_trips(connection):
     assert restored["filters"]["OKX"]["min_trades_24h"] is None
 
 
-def test_candidates_are_linked_to_their_run(connection):
+def test_observations_are_linked_to_their_run(connection):
     run_id = store_run(connection)
 
-    save_candidates(
+    save_observations(
         connection,
         run_id,
         exchange="BINANCE",
-        candidates=[make_candidate("APRUSDT", 1), make_candidate("BRUSDT", 2)],
+        observations=[make_observation("APRUSDT", 1), make_observation("BRUSDT", 2)],
         turnover={"APRUSDT": 851_000_000.0, "BRUSDT": 122_200_000.0},
     )
 
     rows = connection.execute(
-        "SELECT symbol, rank, quote_volume_24h FROM candidates"
+        "SELECT symbol, rank, quote_volume_24h FROM observations"
         " WHERE run_id = ? ORDER BY rank",
         (run_id,),
     ).fetchall()
@@ -151,26 +155,46 @@ def test_candidates_are_linked_to_their_run(connection):
     assert rows == [("APRUSDT", 1, 851_000_000.0), ("BRUSDT", 2, 122_200_000.0)]
 
 
-def test_candidate_stores_the_close_price(connection):
+def test_non_candidates_are_stored_with_empty_rank(connection):
+    """Контрольная группа: инструменты ниже порога тоже попадают в базу,
+    иначе не с чем сравнивать кандидатов и нельзя проверить другой порог."""
+    run_id = store_run(connection)
+
+    save_observations(
+        connection,
+        run_id,
+        "BINANCE",
+        [make_observation("APRUSDT", 1), make_observation("QUIETUSDT", None)],
+        {"APRUSDT": 1.0, "QUIETUSDT": 1.0},
+    )
+
+    rows = connection.execute(
+        "SELECT symbol, rank FROM observations ORDER BY symbol"
+    ).fetchall()
+
+    assert rows == [("APRUSDT", 1), ("QUIETUSDT", None)]
+
+
+def test_observation_stores_the_close_price(connection):
     """Поле price — цена закрытия анализируемой свечи. Без неё этап 9
     не сможет посчитать, что было с ценой после попадания в список."""
     run_id = store_run(connection)
 
-    save_candidates(
-        connection, run_id, "BINANCE", [make_candidate()], {"APRUSDT": 1.0}
+    save_observations(
+        connection, run_id, "BINANCE", [make_observation()], {"APRUSDT": 1.0}
     )
 
-    price = connection.execute("SELECT price FROM candidates").fetchone()[0]
+    price = connection.execute("SELECT price FROM observations").fetchone()[0]
     assert price == 0.3712
 
 
 def test_foreign_key_is_enforced(connection):
     """Проверяет, что PRAGMA foreign_keys включена. Без неё SQLite примет
-    кандидата со ссылкой на несуществующий прогон, и связь между таблицами
+    наблюдение со ссылкой на несуществующий прогон, и связь между таблицами
     окажется фикцией."""
     with pytest.raises(sqlite3.IntegrityError):
-        save_candidates(
-            connection, 999, "BINANCE", [make_candidate()], {"APRUSDT": 1.0}
+        save_observations(
+            connection, 999, "BINANCE", [make_observation()], {"APRUSDT": 1.0}
         )
 
 

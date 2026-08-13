@@ -16,7 +16,7 @@ from pathlib import Path
 
 from src.config import Config
 from src.metrics import Metrics
-from src.scoring import Candidate
+from src.scoring import Observation
 
 DB_PATH = Path("data") / "market_pulse.db"
 
@@ -34,16 +34,17 @@ CREATE TABLE IF NOT EXISTS runs (
     config_json       TEXT
 );
 
-CREATE TABLE IF NOT EXISTS candidates (
+CREATE TABLE IF NOT EXISTS observations (
     id          INTEGER PRIMARY KEY,
     run_id      INTEGER NOT NULL REFERENCES runs(id),
     exchange    TEXT NOT NULL,
     symbol      TEXT NOT NULL,
-    rank        INTEGER NOT NULL,
-    score       REAL NOT NULL,
     rvol        REAL,
     rtc         REAL,
     ve          REAL,
+    score       REAL NOT NULL,
+    triggered   INTEGER NOT NULL,
+    rank        INTEGER,
     price       REAL,
     change_pct  REAL,
     volume_usdt REAL,
@@ -51,8 +52,10 @@ CREATE TABLE IF NOT EXISTS candidates (
     quote_volume_24h REAL
 );
 
+CREATE INDEX IF NOT EXISTS observations_by_run ON observations(run_id);
+
 CREATE TABLE IF NOT EXISTS outcomes (
-    candidate_id INTEGER PRIMARY KEY REFERENCES candidates(id),
+    observation_id INTEGER PRIMARY KEY REFERENCES observations(id),
     ret_30m     REAL,
     ret_2h      REAL,
     ret_8h      REAL,
@@ -159,52 +162,58 @@ def save_run(
     return cursor.lastrowid
 
 
-def candidate_ids(connection: sqlite3.Connection, run_id: int) -> dict[str, int]:
-    """symbol -> id для кандидатов одного прогона.
+def observation_ids(connection: sqlite3.Connection, run_id: int) -> dict[str, int]:
+    """symbol -> id для наблюдений одного прогона.
 
-    Нужен бэктесту: он пишет outcomes сразу после кандидатов, а id строк
+    Нужен бэктесту: он пишет outcomes сразу после наблюдений, а id строк
     executemany не возвращает.
     """
     rows = connection.execute(
-        "SELECT symbol, id FROM candidates WHERE run_id = ?", (run_id,)
+        "SELECT symbol, id FROM observations WHERE run_id = ?", (run_id,)
     ).fetchall()
-    return {symbol: candidate_id for symbol, candidate_id in rows}
+    return {symbol: observation_id for symbol, observation_id in rows}
 
 
-def save_candidates(
+def save_observations(
     connection: sqlite3.Connection,
     run_id: int,
     exchange: str,
-    candidates: list[Candidate],
+    observations: list[Observation],
     turnover: dict[str, float],
 ) -> None:
-    """Записать кандидатов одного прогона.
+    """Записать все наблюдения прогона, а не только кандидатов.
 
-    turnover — оборот за 24 ч по символам. Он приходит из тикера, а не из
-    метрик, поэтому передаётся отдельно.
+    Инструменты ниже порога нужны как контрольная группа: без них нельзя
+    ни сравнить кандидатов с остальными, ни проверить задним числом другой
+    порог. Кандидат отличается тем, что у него заполнен rank.
+
+    turnover — оборот за 24 ч по символам. В живом режиме он приходит
+    из тикера, в бэктесте считается по свечам, поэтому передаётся отдельно.
     """
     connection.executemany(
         """
-        INSERT INTO candidates (
-            run_id, exchange, symbol, rank, score,
-            rvol, rtc, ve, price, change_pct,
-            volume_usdt, trades, quote_volume_24h
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO observations (
+            run_id, exchange, symbol, rvol, rtc, ve, score, triggered, rank,
+            price, change_pct, volume_usdt, trades, quote_volume_24h
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            _candidate_row(run_id, exchange, candidate, turnover)
-            for candidate in candidates
+            _observation_row(run_id, exchange, observation, turnover)
+            for observation in observations
         ],
     )
     connection.commit()
 
 
-def ripe_candidates(
+def ripe_observations(
     connection: sqlite3.Connection, ripe_before: str
 ) -> list[tuple]:
-    """Кандидаты, у которых ещё нет outcome, а время уже пришло.
+    """Наблюдения, у которых ещё нет outcome, а время уже пришло.
 
     Возвращает кортежи (id, exchange, symbol, price, candle_time).
+
+    Берутся все наблюдения, а не только кандидаты: контрольная группа нужна
+    ровно затем, чтобы было с чем сравнивать.
 
     LEFT JOIN с проверкой на NULL — обычный способ спросить «чего нет
     во второй таблице». Сравнение времени работает как сравнение строк:
@@ -212,62 +221,71 @@ def ripe_candidates(
     """
     return connection.execute(
         """
-        SELECT c.id, c.exchange, c.symbol, c.price, r.candle_time
-        FROM candidates c
-        JOIN runs r ON r.id = c.run_id
-        LEFT JOIN outcomes o ON o.candidate_id = c.id
-        WHERE o.candidate_id IS NULL
+        SELECT ob.id, ob.exchange, ob.symbol, ob.price, r.candle_time
+        FROM observations ob
+        JOIN runs r ON r.id = ob.run_id
+        LEFT JOIN outcomes o ON o.observation_id = ob.id
+        WHERE o.observation_id IS NULL
           AND r.candle_time <= ?
-        ORDER BY r.candle_time, c.exchange, c.rank
+        ORDER BY r.candle_time, ob.exchange, ob.score DESC
         """,
         (ripe_before,),
     ).fetchall()
 
 
+def save_outcomes(connection: sqlite3.Connection, records: list[tuple]) -> None:
+    """Записать результаты пачкой.
+
+    records — кортежи (observation_id, ret_30m, ret_2h, ret_8h, max_move_2h).
+
+    Пачкой, а не по одному: в бэктесте строк десятки тысяч, и commit на
+    каждую превращает запись в самую долгую часть прогона — каждый commit
+    это сброс на диск.
+    """
+    filled_at = to_iso(int(datetime.now(tz=timezone.utc).timestamp() * 1000))
+    connection.executemany(
+        """
+        INSERT INTO outcomes (
+            observation_id, ret_30m, ret_2h, ret_8h, max_move_2h, filled_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [(*record, filled_at) for record in records],
+    )
+    connection.commit()
+
+
 def save_outcome(
     connection: sqlite3.Connection,
-    candidate_id: int,
+    observation_id: int,
     ret_30m: float | None,
     ret_2h: float | None,
     ret_8h: float | None,
     max_move_2h: float | None,
 ) -> None:
-    """Записать результат кандидата."""
-    connection.execute(
-        """
-        INSERT INTO outcomes (
-            candidate_id, ret_30m, ret_2h, ret_8h, max_move_2h, filled_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            candidate_id,
-            ret_30m,
-            ret_2h,
-            ret_8h,
-            max_move_2h,
-            to_iso(int(datetime.now(tz=timezone.utc).timestamp() * 1000)),
-        ),
+    """Записать результат одного наблюдения."""
+    save_outcomes(
+        connection, [(observation_id, ret_30m, ret_2h, ret_8h, max_move_2h)]
     )
-    connection.commit()
 
 
-def _candidate_row(
-    run_id: int, exchange: str, candidate: Candidate, turnover: dict[str, float]
+def _observation_row(
+    run_id: int, exchange: str, observation: Observation, turnover: dict[str, float]
 ) -> tuple:
-    """Одна строка таблицы candidates."""
-    metrics: Metrics = candidate.metrics
+    """Одна строка таблицы observations."""
+    metrics: Metrics = observation.metrics
     return (
         run_id,
         exchange,
-        candidate.symbol,
-        candidate.rank,
-        candidate.score,
+        observation.symbol,
         metrics.rvol,
         metrics.rtc,
         metrics.ve,
+        observation.score,
+        observation.triggered,
+        observation.rank,
         metrics.close,
         metrics.change_pct,
         metrics.volume,
         metrics.trades,
-        turnover.get(candidate.symbol),
+        turnover.get(observation.symbol),
     )

@@ -35,12 +35,12 @@ from src.exchanges.base import Candle, Instrument
 from src.filters import apply_filters, rejection_reason
 from src.metrics import compute_metrics
 from src.outcomes import EIGHT_HOURS_MS, compute_outcome
-from src.scoring import is_candidate, select_candidates
+from src.scoring import observe
 from src.storage import (
-    candidate_ids,
     connect,
-    save_candidates,
-    save_outcome,
+    observation_ids,
+    save_observations,
+    save_outcomes,
     save_run,
     to_iso,
 )
@@ -48,8 +48,8 @@ from src.storage import (
 EXCHANGES = (binance, okx)
 SOURCE = "backtest"
 
-# Сколько прогонов моделируем: сутки с шагом в свечу.
-DEFAULT_RUNS = 96
+# Сколько прогонов моделируем. 672 — это неделя с шагом в свечу.
+DEFAULT_RUNS = 672
 
 # Сколько свечей нужно после анализируемой, чтобы посчитать outcomes.
 FUTURE_CANDLES = EIGHT_HOURS_MS // INTERVAL_MS
@@ -245,9 +245,11 @@ def backtest_exchange(
             if metrics is not None:
                 metrics_by_symbol[symbol] = metrics
 
-        candidates = select_candidates(metrics_by_symbol)
+        observations = observe(metrics_by_symbol)
         total = sum(
-            1 for metrics in metrics_by_symbol.values() if is_candidate(metrics)
+            1
+            for observation in observations
+            if observation.triggered >= DEFAULT.min_triggered_metrics
         )
 
         run_id = save_run(
@@ -264,12 +266,12 @@ def backtest_exchange(
         turnover = {
             symbol: turnover_24h(histories[symbol], moment) for symbol in windows
         }
-        save_candidates(connection, run_id, client.NAME, candidates, turnover)
+        save_observations(connection, run_id, client.NAME, observations, turnover)
 
         runs += 1
-        candidates_written += len(candidates)
+        candidates_written += sum(1 for item in observations if item.is_candidate)
         outcomes_written += _write_outcomes(
-            connection, run_id, candidates, histories, moment
+            connection, run_id, observations, histories, moment
         )
 
     return BacktestStats(
@@ -284,37 +286,41 @@ def backtest_exchange(
 def _write_outcomes(
     connection: sqlite3.Connection,
     run_id: int,
-    candidates: list,
+    observations: list,
     histories: dict[str, list[Candle]],
     moment: int,
 ) -> int:
-    """Заполнить результаты кандидатов прямо сейчас.
+    """Заполнить результаты всех наблюдений прямо сейчас.
 
     В бэктесте ждать восьми часов не нужно: «будущее» для этой свечи уже
     лежит в загруженной истории.
-    """
-    ids = candidate_ids(connection, run_id)
-    written = 0
 
-    for candidate in candidates:
+    Результаты считаются для всех, а не только для кандидатов: контрольная
+    группа без outcomes бесполезна.
+    """
+    ids = observation_ids(connection, run_id)
+    records = []
+
+    for observation in observations:
         outcome = compute_outcome(
-            candidate.metrics.close,
+            observation.metrics.close,
             moment,
-            future_at(histories[candidate.symbol], moment),
+            future_at(histories[observation.symbol], moment),
         )
         if outcome.ret_8h is None:
             continue
-        save_outcome(
-            connection,
-            ids[candidate.symbol],
-            outcome.ret_30m,
-            outcome.ret_2h,
-            outcome.ret_8h,
-            outcome.max_move_2h,
+        records.append(
+            (
+                ids[observation.symbol],
+                outcome.ret_30m,
+                outcome.ret_2h,
+                outcome.ret_8h,
+                outcome.max_move_2h,
+            )
         )
-        written += 1
 
-    return written
+    save_outcomes(connection, records)
+    return len(records)
 
 
 def main() -> None:

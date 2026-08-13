@@ -23,8 +23,8 @@ from src.report import (
     render_header,
     render_load_stats,
 )
-from src.scoring import is_candidate, select_candidates
-from src.storage import connect, run_exists, save_candidates, save_run, to_iso
+from src.scoring import observe
+from src.storage import connect, run_exists, save_observations, save_run, to_iso
 
 EXCHANGES = (binance, okx)
 
@@ -44,12 +44,16 @@ def analyse(client, last_closed_open: int, connection: sqlite3.Connection) -> No
     if skipped:
         print(f"Метрика не посчитана (нулевая медиана): {len(skipped)}")
 
-    # Кандидатов может быть больше, чем помещается в выдачу: select_candidates
-    # усекает список до top_n, а в воронку и в базу должно попасть полное число.
+    # В базу пишутся все наблюдения, в отчёт — только кандидаты. Кандидатов
+    # может быть больше, чем помещается в выдачу: ранг получают лишь top_n,
+    # а в воронку и в базу должно попасть полное число.
+    observations = observe(metrics_by_symbol)
+    candidates = [item for item in observations if item.is_candidate]
     candidates_total = sum(
-        1 for metrics in metrics_by_symbol.values() if is_candidate(metrics)
+        1
+        for item in observations
+        if item.triggered >= DEFAULT.min_triggered_metrics
     )
-    candidates = select_candidates(metrics_by_symbol)
 
     print()
     print(
@@ -80,7 +84,7 @@ def analyse(client, last_closed_open: int, connection: sqlite3.Connection) -> No
             passed_filters=filter_stats.passed,
             analysed_symbols=len(metrics_by_symbol),
             candidates_total=candidates_total,
-            candidates=candidates,
+            observations=observations,
             turnover=turnover,
         )
     )
@@ -94,7 +98,7 @@ def store_run(
     passed_filters: int,
     analysed_symbols: int,
     candidates_total: int,
-    candidates: list,
+    observations: list,
     turnover: dict[str, float],
 ) -> str:
     """Сохранить прогон одной биржи и вернуть строку для вывода."""
@@ -110,7 +114,7 @@ def store_run(
         candidates_count=candidates_total,
         config=DEFAULT,
     )
-    save_candidates(connection, run_id, exchange, candidates, turnover)
+    save_observations(connection, run_id, exchange, observations, turnover)
 
     warning = (
         "\nВнимание: для этой свечи прогон уже был. Запись добавлена, "

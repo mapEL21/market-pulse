@@ -228,8 +228,8 @@ def test_backtest_writes_runs_candidates_and_outcomes(monkeypatch):
         runs = connection.execute(
             "SELECT source, candle_time, candidates_count FROM runs ORDER BY id"
         ).fetchall()
-        candidates = connection.execute(
-            "SELECT symbol, ROUND(rvol, 1), ROUND(ve, 1) FROM candidates"
+        observations = connection.execute(
+            "SELECT symbol, ROUND(rvol, 1), ROUND(ve, 1), rank FROM observations"
         ).fetchall()
         outcomes = connection.execute(
             "SELECT COUNT(*) FROM outcomes"
@@ -244,7 +244,10 @@ def test_backtest_writes_runs_candidates_and_outcomes(monkeypatch):
     assert [row[0] for row in runs] == ["backtest", "backtest"]
     assert [row[2] for row in runs] == [1, 1]
     # Всплеск в десять раз выше обычного объёма и в двадцать раз шире.
-    assert candidates == [("TESTUSDT", 10.0, 20.0), ("TESTUSDT", 10.0, 20.0)]
+    assert observations == [
+        ("TESTUSDT", 10.0, 20.0, 1),
+        ("TESTUSDT", 10.0, 20.0, 1),
+    ]
     # Результаты заполняются сразу: будущее уже лежит в загруженной истории.
     assert outcomes == 2
 
