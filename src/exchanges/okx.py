@@ -20,6 +20,7 @@ from src.exchanges.base import Candle, Instrument
 NAME = "OKX"
 MARKET = "USDT perpetual swap"
 BASE_URL = "https://www.okx.com"
+MAX_CANDLES_PER_REQUEST = 300
 TIMEOUT_SEC = 15
 
 

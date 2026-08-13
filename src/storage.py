@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS runs (
     id                INTEGER PRIMARY KEY,
     started_at        TEXT NOT NULL,
     exchange          TEXT NOT NULL,
+    source            TEXT NOT NULL,
     candle_time       TEXT NOT NULL,
     total_symbols     INTEGER,
     passed_filters    INTEGER,
@@ -123,23 +124,29 @@ def save_run(
     analysed_symbols: int,
     candidates_count: int,
     config: Config,
+    source: str = "live",
 ) -> int:
     """Записать прогон одной биржи и вернуть его id.
 
     Строка на биржу, а не на запуск: воронка у каждой биржи своя, и в одну
     строку две не помещаются. Связь «оба списка получены одновременно»
     восстанавливается по candle_time.
+
+    source различает живой прогон и исторический бэктест. Смешивать их
+    в одной выборке нельзя: в бэктесте оборот за 24 ч считается по свечам,
+    а в живом режиме берётся из тикера, и это разные числа.
     """
     cursor = connection.execute(
         """
         INSERT INTO runs (
-            started_at, exchange, candle_time, total_symbols, passed_filters,
-            analysed_symbols, candidates_count, config_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            started_at, exchange, source, candle_time, total_symbols,
+            passed_filters, analysed_symbols, candidates_count, config_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             to_iso(int(datetime.now(tz=timezone.utc).timestamp() * 1000)),
             exchange,
+            source,
             to_iso(candle_open_ms),
             total_symbols,
             passed_filters,
@@ -150,6 +157,18 @@ def save_run(
     )
     connection.commit()
     return cursor.lastrowid
+
+
+def candidate_ids(connection: sqlite3.Connection, run_id: int) -> dict[str, int]:
+    """symbol -> id для кандидатов одного прогона.
+
+    Нужен бэктесту: он пишет outcomes сразу после кандидатов, а id строк
+    executemany не возвращает.
+    """
+    rows = connection.execute(
+        "SELECT symbol, id FROM candidates WHERE run_id = ?", (run_id,)
+    ).fetchall()
+    return {symbol: candidate_id for symbol, candidate_id in rows}
 
 
 def save_candidates(

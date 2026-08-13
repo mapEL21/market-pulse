@@ -13,6 +13,7 @@ from src.exchanges.base import Candle, Instrument
 NAME = "BINANCE"
 MARKET = "USDT-M perpetual"
 BASE_URL = "https://fapi.binance.com"
+MAX_CANDLES_PER_REQUEST = 1500
 TIMEOUT_SEC = 10
 
 _used_weight_1m = 0
