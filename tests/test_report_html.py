@@ -5,11 +5,18 @@
 символ ломают отчёт по-настоящему.
 """
 
+from src.analysis import QUERIES
+from src.config import DEFAULT
 from src.metrics import Metrics
 from src.report_html import build_page, render_card
 from src.scoring import Observation
-from src.storage import connect, save_observations, save_run
-from src.config import DEFAULT
+from src.storage import (
+    connect,
+    observation_ids,
+    save_observations,
+    save_outcomes,
+    save_run,
+)
 
 CANDLE_MS = 1786575600000
 
@@ -101,6 +108,59 @@ def test_page_is_built_on_an_empty_database():
 
     assert "Market Pulse" in page
     assert "Прогонов пока нет" in page
+
+
+def test_every_analysis_query_actually_groups():
+    """Защита от ловушки SQLite: если псевдоним колонки совпадает с именем
+    настоящей колонки таблицы, GROUP BY возьмёт колонку, а не псевдоним.
+    Запрос не упадёт — он вернёт строку на каждое наблюдение вместо
+    нескольких групп, и страница раздуется до мегабайтов.
+
+    Наблюдений здесь заведомо больше, чем групп в любом разделе.
+    """
+    connection = connect(":memory:")
+    try:
+        run_id = save_run(
+            connection,
+            exchange="BINANCE",
+            candle_open_ms=CANDLE_MS,
+            total_symbols=40,
+            passed_filters=40,
+            analysed_symbols=40,
+            candidates_count=0,
+            config=DEFAULT,
+            source="backtest",
+        )
+        observations = [
+            Observation(
+                symbol=f"SYM{index:03d}",
+                score=1.0,
+                triggered=0,
+                metrics=make_metrics(rvol=1.0 + index / 10),
+                rank=None,
+            )
+            for index in range(40)
+        ]
+        save_observations(
+            connection,
+            run_id,
+            "BINANCE",
+            observations,
+            {observation.symbol: 1.0 for observation in observations},
+        )
+        save_outcomes(
+            connection,
+            [
+                (observation_id, 1.0, 1.0, 1.0, 1.0)
+                for observation_id in observation_ids(connection, run_id).values()
+            ],
+        )
+
+        for query in QUERIES:
+            rows = connection.execute(query.sql).fetchall()
+            assert len(rows) <= 10, f"{query.title}: {len(rows)} строк"
+    finally:
+        connection.close()
 
 
 def test_page_shows_the_latest_run_of_each_exchange():

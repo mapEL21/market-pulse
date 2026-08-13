@@ -8,12 +8,39 @@
 в бэктесте оборот за 24 ч считается по свечам, а в живом режиме берётся
 из тикера (раздел 9.2 spec.md).
 
+Псевдонимы колонок русские, в двойных кавычках. SQLite это допускает,
+а отчёт становится читаемым без словаря — и в консоли, и на странице.
+
 Запуск: python -m src.analysis
 """
 
 import sqlite3
+from dataclasses import dataclass
 
 from src.storage import connect
+
+
+@dataclass(frozen=True)
+class Query:
+    """Раздел анализа: вопрос, пояснение, запрос и колонка с ответом.
+
+    highlight — имя колонки, в которой лежит собственно ответ. Консоли она
+    не нужна, а странице нужна: по ней рисуются столбики. Держать её рядом
+    с запросом правильнее, чем заводить второй список на стороне страницы:
+    так числа в консоли и на странице не смогут разойтись.
+
+    Про псевдонимы важно помнить одно: **имя псевдонима не должно совпадать
+    с именем колонки таблицы**. В GROUP BY SQLite разрешит такое имя как
+    настоящую колонку, а не как псевдоним, и сгруппирует не по тому. Ошибка
+    не падает — запрос просто возвращает тысячи строк вместо шести.
+    Поэтому диапазоны названы «диапазон RVOL», а не «RVOL».
+    """
+
+    title: str
+    note: str
+    sql: str
+    highlight: str
+
 
 # Общая часть всех запросов: наблюдение, его прогон и его результат.
 FROM_CLAUSE = """
@@ -28,24 +55,27 @@ FROM_CLAUSE = """
 # долей, а не только средним, которое чувствительно к выбросам.
 NOTABLE_MOVE_PCT = 3.0
 
+SHARE = f"""ROUND(100.0 * SUM(o.max_move_2h >= {NOTABLE_MOVE_PCT}) / COUNT(*), 1)
+                     AS "ходов от 3 %" """
+
 QUERIES = [
-    (
+    Query(
         "1. Контрольная группа: кандидаты против остальных",
         "Главный вопрос проекта. Если отбор ничего не даёт, строки совпадут.",
         f"""
         SELECT CASE WHEN ob.rank IS NOT NULL THEN 'кандидаты'
-                    ELSE 'остальные' END AS gruppa,
-               COUNT(*) AS n,
-               ROUND(AVG(o.max_move_2h), 2) AS sredn_hod_2ch,
-               ROUND(AVG(ABS(o.ret_2h)), 2) AS sredn_mod_ret_2ch,
-               ROUND(AVG(ABS(o.ret_8h)), 2) AS sredn_mod_ret_8ch,
-               ROUND(100.0 * SUM(o.max_move_2h >= {NOTABLE_MOVE_PCT})
-                     / COUNT(*), 1) AS dolya_hod_3pct
+                    ELSE 'остальные' END AS "группа",
+               COUNT(*) AS "наблюдений",
+               ROUND(AVG(o.max_move_2h), 2) AS "ход за 2 ч, %",
+               ROUND(AVG(ABS(o.ret_2h)), 2) AS "|доходность| 2 ч",
+               ROUND(AVG(ABS(o.ret_8h)), 2) AS "|доходность| 8 ч",
+               {SHARE}
         {FROM_CLAUSE}
-        GROUP BY gruppa
+        GROUP BY "группа"
         """,
+        "ходов от 3 %",
     ),
-    (
+    Query(
         "2. Сила сигнала: движение по диапазонам RVOL",
         "Растёт ли результат вместе с метрикой и где на самом деле проходит "
         "граница интересного.",
@@ -55,90 +85,97 @@ QUERIES = [
                     WHEN ob.rvol <  3 THEN '3) 2-3x'
                     WHEN ob.rvol <  5 THEN '4) 3-5x'
                     WHEN ob.rvol < 10 THEN '5) 5-10x'
-                    ELSE                   '6) 10x+' END AS rvol_diapazon,
-               COUNT(*) AS n,
-               ROUND(AVG(o.max_move_2h), 2) AS sredn_hod_2ch,
-               ROUND(100.0 * SUM(o.max_move_2h >= {NOTABLE_MOVE_PCT})
-                     / COUNT(*), 1) AS dolya_hod_3pct
+                    ELSE                   '6) 10x+' END AS "диапазон RVOL",
+               COUNT(*) AS "наблюдений",
+               ROUND(AVG(o.max_move_2h), 2) AS "ход за 2 ч, %",
+               {SHARE}
         {FROM_CLAUSE}
-        GROUP BY rvol_diapazon
-        ORDER BY rvol_diapazon
+        GROUP BY "диапазон RVOL"
+        ORDER BY "диапазон RVOL"
         """,
+        "ходов от 3 %",
     ),
-    (
+    Query(
         "3. Правило «не меньше двух метрик»",
         "Оправдана ли защита от разовой аномалии в одном показателе.",
         f"""
-        SELECT ob.triggered AS srabotalo_metrik,
-               COUNT(*) AS n,
-               ROUND(AVG(o.max_move_2h), 2) AS sredn_hod_2ch,
-               ROUND(100.0 * SUM(o.max_move_2h >= {NOTABLE_MOVE_PCT})
-                     / COUNT(*), 1) AS dolya_hod_3pct
+        SELECT ob.triggered AS "сработало метрик",
+               COUNT(*) AS "наблюдений",
+               ROUND(AVG(o.max_move_2h), 2) AS "ход за 2 ч, %",
+               {SHARE}
         {FROM_CLAUSE}
-        GROUP BY ob.triggered
-        ORDER BY ob.triggered
+        GROUP BY "сработало метрик"
+        ORDER BY "сработало метрик"
         """,
+        "ходов от 3 %",
     ),
-    (
+    Query(
         "4. Ложные срабатывания среди кандидатов",
         "Доля кандидатов, у которых за два часа не случилось почти ничего.",
-        f"""
-        SELECT ob.exchange AS birzha,
-               COUNT(*) AS kandidatov,
-               SUM(o.max_move_2h < 1) AS hod_menshe_1pct,
-               ROUND(100.0 * SUM(o.max_move_2h < 1) / COUNT(*), 1) AS dolya
-        {FROM_CLAUSE}
+        """
+        SELECT ob.exchange AS "биржа",
+               COUNT(*) AS "кандидатов",
+               SUM(o.max_move_2h < 1) AS "ход меньше 1 %",
+               ROUND(100.0 * SUM(o.max_move_2h < 1) / COUNT(*), 1)
+                     AS "доля пустышек"
+        """
+        + FROM_CLAUSE
+        + """
           AND ob.rank IS NOT NULL
-        GROUP BY ob.exchange
+        GROUP BY "биржа"
         """,
+        "доля пустышек",
     ),
-    (
+    Query(
         "5. Ликвидность: спор про 50 против 200 млн",
         "Отличается ли поведение кандидатов по группам оборота за 24 ч.",
         f"""
         SELECT CASE WHEN ob.quote_volume_24h >= 200e6 THEN '3) 200M+'
                     WHEN ob.quote_volume_24h >= 100e6 THEN '2) 100-200M'
-                    ELSE                                   '1) 50-100M' END AS oborot,
-               COUNT(*) AS kandidatov,
-               ROUND(AVG(o.max_move_2h), 2) AS sredn_hod_2ch,
-               ROUND(100.0 * SUM(o.max_move_2h >= {NOTABLE_MOVE_PCT})
-                     / COUNT(*), 1) AS dolya_hod_3pct
+                    ELSE '1) 50-100M' END AS "оборот за 24 ч",
+               COUNT(*) AS "кандидатов",
+               ROUND(AVG(o.max_move_2h), 2) AS "ход за 2 ч, %",
+               {SHARE}
         {FROM_CLAUSE}
           AND ob.rank IS NOT NULL
-        GROUP BY oborot
-        ORDER BY oborot
+        GROUP BY "оборот за 24 ч"
+        ORDER BY "оборот за 24 ч"
         """,
+        "ходов от 3 %",
     ),
-    (
+    Query(
         "6. Биржи",
         "У OKX метрик две вместо трёх, поэтому сравнение с оговоркой.",
         f"""
-        SELECT ob.exchange AS birzha,
-               COUNT(*) AS kandidatov,
-               ROUND(AVG(ob.score), 2) AS sredn_score,
-               ROUND(AVG(o.max_move_2h), 2) AS sredn_hod_2ch,
-               ROUND(100.0 * SUM(o.max_move_2h >= {NOTABLE_MOVE_PCT})
-                     / COUNT(*), 1) AS dolya_hod_3pct
+        SELECT ob.exchange AS "биржа",
+               COUNT(*) AS "кандидатов",
+               ROUND(AVG(ob.score), 2) AS "средний score",
+               ROUND(AVG(o.max_move_2h), 2) AS "ход за 2 ч, %",
+               {SHARE}
         {FROM_CLAUSE}
           AND ob.rank IS NOT NULL
-        GROUP BY ob.exchange
+        GROUP BY "биржа"
         """,
+        "ходов от 3 %",
     ),
-    (
+    Query(
         "7. Час суток",
         "Отложенный вопрос с этапа 4: медиана RVOL по рынку зависела от "
         "времени суток. Влияет ли это на качество кандидатов.",
-        f"""
-        SELECT substr(r.candle_time, 12, 2) AS chas_utc,
-               COUNT(*) AS kandidatov,
-               ROUND(AVG(o.max_move_2h), 2) AS sredn_hod_2ch
-        {FROM_CLAUSE}
+        """
+        SELECT substr(r.candle_time, 12, 2) AS "час UTC",
+               COUNT(*) AS "кандидатов",
+               ROUND(AVG(o.max_move_2h), 2) AS "ход за 2 ч, %"
+        """
+        + FROM_CLAUSE
+        + """
           AND ob.rank IS NOT NULL
-        GROUP BY chas_utc
-        HAVING kandidatov >= 10
-        ORDER BY sredn_hod_2ch DESC
+        GROUP BY "час UTC"
+        HAVING "кандидатов" >= 10
+        ORDER BY "ход за 2 ч, %" DESC
         LIMIT 6
         """,
+        "ход за 2 ч, %",
     ),
 ]
 
@@ -177,15 +214,15 @@ def main() -> None:
             f"из них кандидатов {scope[2]}"
         )
 
-        for title, note, sql in QUERIES:
+        for query in QUERIES:
             print()
             print("=" * 78)
-            print(title)
-            print(note)
+            print(query.title)
+            print(query.note)
             print("=" * 78)
-            print(sql.strip())
+            print(query.sql.strip())
             print()
-            print(render_table(connection.execute(sql)))
+            print(render_table(connection.execute(query.sql)))
     finally:
         connection.close()
 
